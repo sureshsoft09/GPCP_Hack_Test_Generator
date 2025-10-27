@@ -4,17 +4,10 @@ from pathlib import Path
 import google.auth
 from dotenv import load_dotenv
 from google.adk.agents import Agent
-from google.cloud import logging as google_cloud_logging
 from google.adk.tools import agent_tool
-
-# Import other agents using relative imports since we're inside the Agents folder
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from google.cloud import logging as google_cloud_logging
 
 from test_generator_agent import test_generator_agent
-from migrate_testcase_agent import migrate_testcase_agent
-from enhance_testcase_agent import enhance_testcase_agent
-
 
 # Load environment variables from .env file in root directory
 root_dir = Path(__file__).parent.parent
@@ -27,16 +20,14 @@ os.environ.setdefault("GOOGLE_CLOUD_LOCATION", "global")
 os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "True")
 
 logging_client = google_cloud_logging.Client()
-logger = logging_client.logger("weather-agent")
+logger = logging_client.logger("migrate_testcase_agent")
 
 test_generator_agent_tool = agent_tool.AgentTool(agent=test_generator_agent)
-enhance_testcase_agent_tool = agent_tool.AgentTool(agent=enhance_testcase_agent)
-migrate_testcase_agent_tool = agent_tool.AgentTool(agent=migrate_testcase_agent)
 
-root_agent = Agent(
-    name="master_agent",
+migrate_testcase_agent = Agent(
+    name="migrate_testcase_agent",
     model="gemini-2.5-flash",
-    instruction= """
+    instruction="""
 You are the MASTER_AGENT — the central orchestrator responsible for managing and routing tasks to specialized agents. 
 You are connected to the following agent tools:
 1. test_generator_agent — for generating new compliant and traceable test cases.
@@ -124,8 +115,5 @@ All final responses from MASTER_AGENT must be structured JSON:
   - migrate_testcase_agent
 - Ensure all responses adhere to GDPR and healthcare compliance constraints.
 """,
-    tools=[test_generator_agent_tool,
-            enhance_testcase_agent_tool,
-            migrate_testcase_agent_tool   
-    ],     
+    tools=[test_generator_agent_tool],
 )
