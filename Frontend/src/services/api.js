@@ -56,6 +56,7 @@ const api = {
   }),
   
   reviewRequirementSpecifications: (data) => apiInstance.post('/review_requirement_specifications', data),
+  requirementClarificationChat: (data) => apiInstance.post('/requirement_clarification_chat', data),
   
   generateTestCases: (data) => apiInstance.post('/generate_test_cases', data),
   

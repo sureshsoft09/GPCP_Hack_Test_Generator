@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import api from '../services/api';
 import {
   Box,
   Container,
@@ -69,27 +70,50 @@ import {
 import { TreeView, TreeItem } from '@mui/x-tree-view';
 
 const TestCaseGeneration = () => {
+  // Refs
+  const chatMessagesRef = useRef(null);
+
   // State management
   const [activeStep, setActiveStep] = useState(0);
   const [projectData, setProjectData] = useState({
     name: '',
     description: '',
-    created: null
+    created: null,
+    id: null
   });
   const [uploadedFiles, setUploadedFiles] = useState([]);
+  const [selectedFiles, setSelectedFiles] = useState([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [extractedContent, setExtractedContent] = useState('');
+  const [uploadCompleted, setUploadCompleted] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [assistantEnabled, setAssistantEnabled] = useState(false);
+  const [readinessMeta, setReadinessMeta] = useState(null); // raw backend response metadata
   const [readinessPlan, setReadinessPlan] = useState(null);
   const [generatedTestCases, setGeneratedTestCases] = useState([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [exportFormat, setExportFormat] = useState('pdf');
   const [notification, setNotification] = useState({ open: false, message: '', type: 'info' });
+
+  // Derived readiness flag
+  const isReadyForGeneration = Boolean(
+    readinessMeta?.readiness_plan?.overall_status?.toString()?.toLowerCase().includes('ready') ||
+    readinessMeta?.test_generation_status?.ready_for_generation ||
+    readinessPlan?.test_generation_status?.ready_for_generation
+  );
   
   // Dialog states
   const [newProjectDialog, setNewProjectDialog] = useState(false);
   const [exportDialog, setExportDialog] = useState(false);
+
+  // Auto-scroll to bottom when chat messages change
+  useEffect(() => {
+    if (chatMessagesRef.current) {
+      chatMessagesRef.current.scrollTop = chatMessagesRef.current.scrollHeight;
+    }
+  }, [chatMessages, isProcessing]);
 
   // Step definitions
   const steps = [
@@ -130,17 +154,20 @@ const TestCaseGeneration = () => {
       return;
     }
     
+    const projectId = `proj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
     setProjectData({
       ...projectData,
-      created: new Date()
+      created: new Date(),
+      id: projectId
     });
     setNewProjectDialog(false);
     setActiveStep(1);
     showNotification('Project created successfully!', 'success');
   };
 
-  // Step 2: File Upload
-  const handleFileUpload = (event) => {
+  // Step 2: File Selection and Upload
+  const handleFileSelection = (event) => {
     const files = Array.from(event.target.files);
     const validFiles = files.filter(file => 
       file.type === 'application/pdf' || 
@@ -151,27 +178,70 @@ const TestCaseGeneration = () => {
       showNotification('Only PDF and DOCX files are supported', 'warning');
     }
 
+    setSelectedFiles(validFiles);
+    setUploadCompleted(false);
+    
+    if (validFiles.length > 0) {
+      showNotification(`${validFiles.length} file(s) selected for upload`, 'info');
+    }
+  };
+
+  const handleFileUpload = async () => {
+    if (selectedFiles.length === 0) {
+      showNotification('Please select files first', 'warning');
+      return;
+    }
+
+    if (!projectData.id || !projectData.name) {
+      showNotification('Project information missing', 'error');
+      return;
+    }
+
     setIsUploading(true);
     
-    // Simulate upload process
-    setTimeout(() => {
-      const newFiles = validFiles.map(file => ({
-        id: Date.now() + Math.random(),
-        name: file.name,
-        size: file.size,
-        type: file.type,
-        uploaded: new Date(),
-        status: 'uploaded'
-      }));
+    try {
+      const formData = new FormData();
+      formData.append('project_name', projectData.name);
+      formData.append('project_id', projectData.id);
       
-      setUploadedFiles([...uploadedFiles, ...newFiles]);
-      setIsUploading(false);
-      showNotification(`${newFiles.length} file(s) uploaded successfully!`, 'success');
+      selectedFiles.forEach((file) => {
+        formData.append('files', file);
+      });
+
+      const response = await api.uploadRequirementFile(formData);
       
-      if (newFiles.length > 0) {
-        setActiveStep(2);
+      if (response.data.success) {
+        const processedFiles = response.data.files_processed.map(file => ({
+          id: Date.now() + Math.random(),
+          name: file.filename,
+          size: file.size,
+          type: file.type,
+          uploaded: new Date(),
+          status: 'uploaded',
+          cloudPath: file.cloud_path,
+          textLength: file.text_length
+        }));
+        
+        setUploadedFiles(processedFiles);
+        setExtractedContent(response.data.extracted_content);
+        setUploadCompleted(true);
+        setIsUploading(false);
+        
+        showNotification(
+          `Successfully uploaded and processed ${processedFiles.length} file(s)!`, 
+          'success'
+        );
+      } else {
+        throw new Error('Upload failed');
       }
-    }, 2000);
+    } catch (error) {
+      console.error('Upload error:', error);
+      setIsUploading(false);
+      showNotification(
+        error.response?.data?.detail || 'Failed to upload files. Please try again.',
+        'error'
+      );
+    }
   };
 
   const removeFile = (fileId) => {
@@ -179,7 +249,173 @@ const TestCaseGeneration = () => {
     showNotification('File removed', 'info');
   };
 
-  // Step 3: Chat Interface
+  // Note: Clarification chat is handled in handleSendMessage below (calls backend)
+
+  // Helper function to parse AI response and extract structured data
+  const parseAIResponse = (aiResponse) => {
+    // Ensure aiResponse is a string
+    let responseText = '';
+    if (typeof aiResponse === 'string') {
+      responseText = aiResponse;
+    } else if (aiResponse && typeof aiResponse === 'object') {
+      responseText = JSON.stringify(aiResponse);
+    } else {
+      responseText = String(aiResponse || '');
+    }
+    
+    // Try to extract structured information from the AI response
+    const lines = responseText.split('\n').filter(line => line.trim());
+    const parsedData = {
+      documentAnalysis: {
+        totalPages: uploadedFiles.length * 15, // Estimate
+        keyFeatures: Math.floor(extractedContent.length / 1000), // Rough estimate
+        requirements: Math.floor(extractedContent.length / 500), // Rough estimate
+        riskAreas: 3
+      },
+      testingStrategy: {
+        functionalTests: 85,
+        nonFunctionalTests: 25,
+        integrationTests: 15,
+        edgeCases: 20
+      },
+      coverage: {
+        requirementsCoverage: 95,
+        featureCoverage: 88,
+        riskCoverage: 100
+      },
+      recommendations: []
+    };
+
+    // Try to extract recommendations from AI response
+    const recommendationKeywords = ['recommend', 'suggest', 'should', 'consider', 'important'];
+    const potentialRecommendations = lines.filter(line => 
+      recommendationKeywords.some(keyword => line.toLowerCase().includes(keyword))
+    ).slice(0, 5); // Take first 5 recommendations
+
+    if (potentialRecommendations.length > 0) {
+      parsedData.recommendations = potentialRecommendations.map(rec => 
+        rec.replace(/^\d+\.?\s*/, '').trim() // Remove numbering if present
+      );
+    } else {
+      // Fallback recommendations
+      parsedData.recommendations = [
+        "Focus on authentication and authorization testing",
+        "Include performance testing for data processing modules",
+        "Add comprehensive error handling test cases",
+        "Consider accessibility testing requirements"
+      ];
+    }
+
+    return parsedData;
+  };
+
+  const handleReviewDocuments = async () => {
+    if (!uploadCompleted) {
+      showNotification('Please upload files first', 'warning');
+      return;
+    }
+
+    if (!projectData.id || !projectData.name) {
+      showNotification('Project information missing', 'error');
+      return;
+    }
+
+    setIsProcessing(true);
+    
+    try {
+      const response = await api.reviewRequirementSpecifications({
+        project_id: projectData.id,
+        project_name: projectData.name
+      });
+
+      console.log('Review response:', response);
+
+      // Parse the JSON response string from the backend
+      const responseString = response.data.response;
+      if (!responseString) throw new Error('No response from analysis service');
+
+      // Extract JSON from the response string (it's wrapped in ```json```)
+      let data;
+      try {
+        const jsonMatch = responseString.match(/```json\n([\s\S]*?)\n```/);
+        if (jsonMatch) {
+          data = JSON.parse(jsonMatch[1]);
+        } else {
+          // Try parsing the whole response as JSON
+          data = JSON.parse(responseString);
+        }
+      } catch (parseError) {
+        console.error('Failed to parse JSON response:', parseError);
+        throw new Error('Invalid response format from analysis service');
+      }
+
+      // Store raw metadata for control logic
+      setReadinessMeta(data);
+
+      // Build a human readable AI analysis text from assistant_response if present
+      const assistantLines = Array.isArray(data.assistant_response) ? data.assistant_response : (data.assistant_response ? [data.assistant_response] : []);
+      const aiAnalysisText = assistantLines.join('\n') || data.ai_text || '';
+
+      // Keep existing parsed readinessPlan for existing UI widgets
+      const parsedData = aiAnalysisText ? parseAIResponse(aiAnalysisText) : parseAIResponse(data.readiness_plan ? JSON.stringify(data.readiness_plan) : '');
+      const mergedPlan = {
+        ...parsedData,
+        aiAnalysis: aiAnalysisText,
+        // keep a reference to backend readiness summary
+        backendReadiness: data.readiness_plan || null,
+        test_generation_status: data.test_generation_status || {}
+      };
+
+      setReadinessPlan(mergedPlan);
+      setIsProcessing(false);
+      
+      // Initialize chat messages depending on overall status
+      const overall = data.readiness_plan?.overall_status || null;
+
+      if (overall && overall.toLowerCase().includes('ready for test generation')) {
+        // Ready for test generation: disable assistant, enable generate, advance to step 3
+        setAssistantEnabled(false);
+        setActiveStep(3);
+        showNotification('Requirements are ready for test case generation!', 'success');
+        
+        // Show assistant final confirmation in chat
+        const initialMessage = {
+          id: Date.now(),
+          text: aiAnalysisText || "All clarifications have been addressed. Ready for test case generation.",
+          sender: 'ai',
+          timestamp: new Date()
+        };
+        setChatMessages([initialMessage]);
+      } else {
+        // Not ready: enable assistant, stay on step 2 (Review & Chat)
+        setAssistantEnabled(true);
+        setActiveStep(2);
+        showNotification('Clarifications needed - please use the chat to provide additional information.', 'warning');
+        
+        const initialMessages = assistantLines.length > 0 ? assistantLines.map((m, i) => ({ 
+          id: Date.now() + i + 1, 
+          text: m, 
+          sender: 'ai', 
+          timestamp: new Date() 
+        })) : [{ 
+          id: Date.now(), 
+          text: 'The analysis indicates clarifications are needed. Please provide the requested information.', 
+          sender: 'ai', 
+          timestamp: new Date() 
+        }];
+        setChatMessages(initialMessages);
+      }
+    } catch (error) {
+      console.error('Review error:', error);
+      setIsProcessing(false);
+      showNotification(
+        error.response?.data?.detail || 'Failed to analyze documents. Please try again.',
+        'error'
+      );
+    }
+  };
+
+  // Clarification chat handler that calls backend and loops until overall_status becomes Ready
   const handleSendMessage = async () => {
     if (!newMessage.trim()) return;
 
@@ -190,80 +426,113 @@ const TestCaseGeneration = () => {
       timestamp: new Date()
     };
 
-    setChatMessages([...chatMessages, userMessage]);
+    // Append user message to chat
+    setChatMessages(prev => [...prev, userMessage]);
     setNewMessage('');
     setIsProcessing(true);
 
-    // Simulate AI response
-    setTimeout(() => {
-      const aiResponse = {
+    try {
+      // Call clarification API on backend - backend expects PromptRequest with just a prompt field
+      const payload = {
+        prompt: userMessage.text,
+        metadata: {
+          project_id: projectData.id,
+          project_name: projectData.name,
+          type: 'clarification',
+          conversation_length: chatMessages.length
+        }
+      };
+
+      const resp = await api.requirementClarificationChat(payload);
+      
+      // Parse the JSON response string from the backend (similar to review response)
+      const responseString = resp.data.response || resp.data;
+      let respData;
+      
+      if (typeof responseString === 'string') {
+        try {
+          const jsonMatch = responseString.match(/```json\n([\s\S]*?)\n```/);
+          if (jsonMatch) {
+            respData = JSON.parse(jsonMatch[1]);
+          } else {
+            respData = JSON.parse(responseString);
+          }
+        } catch (parseError) {
+          console.error('Failed to parse clarification response:', parseError);
+          respData = { assistant_response: responseString };
+        }
+      } else {
+        respData = responseString;
+      }
+
+      // Backend should return assistant reply and possibly updated readiness_plan
+      let assistantReply;
+      if (respData?.assistant_response) {
+        if (Array.isArray(respData.assistant_response)) {
+          assistantReply = respData.assistant_response.join('\n');
+        } else if (typeof respData.assistant_response === 'string') {
+          assistantReply = respData.assistant_response;
+        } else {
+          assistantReply = 'Thank you for the clarification.';
+        }
+      } else if (respData?.response && typeof respData.response === 'string') {
+        assistantReply = respData.response;
+      } else {
+        assistantReply = 'Thank you for the clarification.';
+      }
+
+      const aiMessage = {
         id: Date.now() + 1,
-        text: generateAIResponse(newMessage),
+        text: assistantReply,
         sender: 'ai',
         timestamp: new Date()
       };
-      
-      setChatMessages(prev => [...prev, aiResponse]);
-      setIsProcessing(false);
-    }, 1500);
-  };
 
-  const generateAIResponse = (userInput) => {
-    const responses = [
-      "I've analyzed your requirement document. The functionality appears to be well-defined. Would you like me to clarify any specific test scenarios?",
-      "Based on the uploaded documents, I can see several key features that need testing. Let me break down the critical test areas for you.",
-      "The requirements look comprehensive. I've identified potential edge cases that should be included in the test suite. Shall we proceed with test case generation?",
-      "I notice some areas where additional test coverage might be beneficial. Would you like me to suggest additional test scenarios?",
-      "The document structure is clear. I'm ready to generate test cases covering functional, non-functional, and edge case scenarios."
-    ];
-    return responses[Math.floor(Math.random() * responses.length)];
-  };
+      setChatMessages(prev => [...prev, aiMessage]);
 
-  const handleReviewDocuments = async () => {
-    setIsProcessing(true);
-    
-    // Simulate document analysis
-    setTimeout(() => {
-      const mockReadinessPlan = {
-        documentAnalysis: {
-          totalPages: 45,
-          keyFeatures: 12,
-          requirements: 28,
-          riskAreas: 3
-        },
-        testingStrategy: {
-          functionalTests: 85,
-          nonFunctionalTests: 25,
-          integrationTests: 15,
-          edgeCases: 20
-        },
-        coverage: {
-          requirementsCoverage: 95,
-          featureCoverage: 88,
-          riskCoverage: 100
-        },
-        recommendations: [
-          "Focus on authentication and authorization testing",
-          "Include performance testing for data processing modules",
-          "Add comprehensive error handling test cases",
-          "Consider accessibility testing requirements"
-        ]
-      };
-      
-      setReadinessPlan(mockReadinessPlan);
+      // Update readiness meta if backend returned updated readiness_plan
+      if (respData) {
+        setReadinessMeta(respData);
+      }
+
+      // Check overall status and advance to next step if ready
+      const overall = respData?.readiness_plan?.overall_status || readinessMeta?.readiness_plan?.overall_status || null;
+
+      if (overall && overall.toLowerCase().includes('ready')) {
+        // Ready to generate - advance to step 3 and disable assistant
+        setAssistantEnabled(false);
+        setActiveStep(3);
+        showNotification('Requirements are ready for test generation!', 'success');
+      } else {
+        // Still needs clarification; keep assistant enabled and stay on step 2
+        setAssistantEnabled(true);
+        // Don't change step - stay on Review & Chat
+      }
+
       setIsProcessing(false);
-      setActiveStep(3);
-      showNotification('Document analysis completed!', 'success');
+    } catch (err) {
+      console.error('Clarification chat error:', err);
+      setIsProcessing(false);
       
-      // Add initial AI message
-      const initialMessage = {
-        id: Date.now(),
-        text: "I've completed the analysis of your requirement documents. The readiness plan shows good coverage potential. Feel free to ask any questions about the requirements or testing strategy.",
+      // Add error message to chat
+      const errorMessage = {
+        id: Date.now() + 1,
+        text: 'Sorry, I encountered an error processing your message. Please try again.',
         sender: 'ai',
         timestamp: new Date()
       };
-      setChatMessages([initialMessage]);
-    }, 3000);
+      setChatMessages(prev => [...prev, errorMessage]);
+      
+      // Extract error message safely
+      let errorText = 'Clarification request failed';
+      if (err.response?.data?.detail && typeof err.response.data.detail === 'string') {
+        errorText = err.response.data.detail;
+      } else if (err.message && typeof err.message === 'string') {
+        errorText = err.message;
+      }
+      
+      showNotification(errorText, 'error');
+    }
   };
 
   // Step 4: Generate Test Cases
@@ -391,14 +660,16 @@ const TestCaseGeneration = () => {
       sx={{
         display: 'flex',
         justifyContent: message.sender === 'user' ? 'flex-end' : 'flex-start',
-        mb: 2
+        mb: 2,
+        px: 1
       }}
     >
       <Card
         sx={{
-          maxWidth: '70%',
+          maxWidth: '85%',
           bgcolor: message.sender === 'user' ? 'primary.main' : 'grey.100',
-          color: message.sender === 'user' ? 'white' : 'text.primary'
+          color: message.sender === 'user' ? 'white' : 'text.primary',
+          boxShadow: 1
         }}
       >
         <CardContent sx={{ py: 1, px: 2, '&:last-child': { pb: 1 } }}>
@@ -417,7 +688,16 @@ const TestCaseGeneration = () => {
               {message.sender === 'user' ? 'You' : 'AI Assistant'}
             </Typography>
           </Box>
-          <Typography variant="body2">{message.text}</Typography>
+          <Typography 
+            variant="body2" 
+            sx={{ 
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              lineHeight: 1.4
+            }}
+          >
+            {typeof message.text === 'string' ? message.text : 'Invalid message format'}
+          </Typography>
         </CardContent>
       </Card>
     </Box>
@@ -552,46 +832,84 @@ const TestCaseGeneration = () => {
                           Upload Requirement Documents
                         </Typography>
                         <Typography variant="body2" color="text.secondary" gutterBottom>
-                          Upload PDF or DOCX files containing your project requirements
+                          Select PDF or DOCX files containing your project requirements
                         </Typography>
                         
+                        {/* File Selection */}
                         <Box sx={{ mt: 2, mb: 2 }}>
                           <input
                             accept=".pdf,.docx"
                             style={{ display: 'none' }}
-                            id="file-upload"
+                            id="file-select"
                             type="file"
                             multiple
-                            onChange={handleFileUpload}
+                            onChange={handleFileSelection}
                           />
-                          <label htmlFor="file-upload">
+                          <label htmlFor="file-select">
                             <Button
                               variant="outlined"
                               component="span"
-                              startIcon={<UploadIcon />}
+                              startIcon={<FileIcon />}
                               disabled={isUploading}
                             >
-                              {isUploading ? 'Uploading...' : 'Upload Files'}
+                              Select Files
                             </Button>
                           </label>
                         </Box>
 
-                        {isUploading && <LinearProgress sx={{ mb: 2 }} />}
-
-                        {uploadedFiles.length > 0 && (
-                          <Box>
+                        {/* Selected Files Display */}
+                        {selectedFiles.length > 0 && (
+                          <Box sx={{ mb: 2 }}>
                             <Typography variant="subtitle2" gutterBottom>
-                              Uploaded Files ({uploadedFiles.length})
+                              Selected Files ({selectedFiles.length})
                             </Typography>
                             <List>
-                              {uploadedFiles.map((file) => (
-                                <ListItem key={file.id}>
+                              {selectedFiles.map((file, index) => (
+                                <ListItem key={index}>
                                   <ListItemIcon>
                                     <DocumentIcon />
                                   </ListItemIcon>
                                   <ListItemText
                                     primary={file.name}
-                                    secondary={`${(file.size / 1024).toFixed(1)} KB - Uploaded ${file.uploaded.toLocaleTimeString()}`}
+                                    secondary={`${(file.size / 1024).toFixed(1)} KB - ${file.type.includes('pdf') ? 'PDF' : 'DOCX'}`}
+                                  />
+                                </ListItem>
+                              ))}
+                            </List>
+                            
+                            {/* Upload Button */}
+                            <Button
+                              variant="contained"
+                              startIcon={isUploading ? <CircularProgress size={20} /> : <UploadIcon />}
+                              onClick={handleFileUpload}
+                              disabled={isUploading}
+                              sx={{ mt: 1 }}
+                            >
+                              {isUploading ? 'Uploading...' : 'Upload Files'}
+                            </Button>
+                          </Box>
+                        )}
+
+                        {isUploading && <LinearProgress sx={{ mb: 2 }} />}
+
+                        {/* Uploaded Files Display */}
+                        {uploadedFiles.length > 0 && (
+                          <Box>
+                            <Alert severity="success" sx={{ mb: 2 }}>
+                              Successfully uploaded and processed {uploadedFiles.length} file(s)!
+                            </Alert>
+                            <Typography variant="subtitle2" gutterBottom>
+                              Processed Files ({uploadedFiles.length})
+                            </Typography>
+                            <List>
+                              {uploadedFiles.map((file) => (
+                                <ListItem key={file.id}>
+                                  <ListItemIcon>
+                                    <CheckIcon color="success" />
+                                  </ListItemIcon>
+                                  <ListItemText
+                                    primary={file.name}
+                                    secondary={`${(file.size / 1024).toFixed(1)} KB - Processed ${file.uploaded.toLocaleTimeString()} - ${file.textLength} characters extracted`}
                                   />
                                   <IconButton onClick={() => removeFile(file.id)}>
                                     <DeleteIcon />
@@ -611,7 +929,7 @@ const TestCaseGeneration = () => {
                       <Button
                         variant="contained"
                         onClick={handleReviewDocuments}
-                        disabled={uploadedFiles.length === 0 || isProcessing}
+                        disabled={!uploadCompleted || isProcessing}
                         startIcon={isProcessing ? <CircularProgress size={20} /> : <ChatIcon />}
                       >
                         {isProcessing ? 'Analyzing...' : 'Review Documents'}
@@ -631,8 +949,72 @@ const TestCaseGeneration = () => {
                             <Typography variant="h6" gutterBottom>
                               Readiness Plan
                             </Typography>
-                            {readinessPlan ? (
+                            {isProcessing ? (
+                              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 4 }}>
+                                <CircularProgress size={40} sx={{ mb: 2 }} />
+                                <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                                  Analyzing uploaded documents...
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                  This may take a few moments
+                                </Typography>
+                              </Box>
+                            ) : readinessPlan ? (
                               <Box>
+                                {/* AI Analysis Section */}
+                                {readinessPlan.aiAnalysis && (
+                                  <Accordion defaultExpanded>
+                                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                                      <Typography variant="subtitle1" sx={{ fontWeight: 'bold', display: 'flex', alignItems: 'center' }}>
+                                        <BotIcon sx={{ mr: 1, color: 'primary.main' }} />
+                                        AI Analysis Report
+                                        <Chip 
+                                          label="Live Analysis" 
+                                          size="small" 
+                                          color="success" 
+                                          sx={{ ml: 1 }}
+                                        />
+                                      </Typography>
+                                    </AccordionSummary>
+                                    <AccordionDetails>
+                                      <Paper 
+                                        elevation={1} 
+                                        sx={{ 
+                                          p: 2, 
+                                          backgroundColor: 'grey.50',
+                                          maxHeight: 300,
+                                          overflow: 'auto',
+                                          border: '1px solid',
+                                          borderColor: 'primary.light'
+                                        }}
+                                      >
+                                        <Typography 
+                                          variant="body2" 
+                                          sx={{ 
+                                            whiteSpace: 'pre-wrap',
+                                            lineHeight: 1.6,
+                                            color: 'text.primary'
+                                          }}
+                                        >
+                                          {typeof readinessPlan.aiAnalysis === 'string' 
+                                            ? readinessPlan.aiAnalysis 
+                                            : 'Analysis data is not available'}
+                                        </Typography>
+                                      </Paper>
+                                      <Box sx={{ mt: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                        <Typography variant="caption" color="text.secondary">
+                                          Analysis generated: {new Date().toLocaleString()}
+                                        </Typography>
+                                        <Chip 
+                                          label={`${Math.ceil((readinessPlan.aiAnalysis && typeof readinessPlan.aiAnalysis === 'string' ? readinessPlan.aiAnalysis.length : 0) / 100)} insights`} 
+                                          size="small" 
+                                          variant="outlined"
+                                        />
+                                      </Box>
+                                    </AccordionDetails>
+                                  </Accordion>
+                                )}
+
                                 <Accordion>
                                   <AccordionSummary expandIcon={<ExpandMoreIcon />}>
                                     <Typography>Document Analysis</Typography>
@@ -640,16 +1022,16 @@ const TestCaseGeneration = () => {
                                   <AccordionDetails>
                                     <Grid container spacing={2}>
                                       <Grid item xs={6}>
-                                        <Typography variant="body2">Total Pages: {readinessPlan.documentAnalysis.totalPages}</Typography>
+                                        <Typography variant="body2">Total Pages: {readinessPlan.documentAnalysis?.totalPages || 0}</Typography>
                                       </Grid>
                                       <Grid item xs={6}>
-                                        <Typography variant="body2">Key Features: {readinessPlan.documentAnalysis.keyFeatures}</Typography>
+                                        <Typography variant="body2">Key Features: {readinessPlan.documentAnalysis?.keyFeatures || 0}</Typography>
                                       </Grid>
                                       <Grid item xs={6}>
-                                        <Typography variant="body2">Requirements: {readinessPlan.documentAnalysis.requirements}</Typography>
+                                        <Typography variant="body2">Requirements: {readinessPlan.documentAnalysis?.requirements || 0}</Typography>
                                       </Grid>
                                       <Grid item xs={6}>
-                                        <Typography variant="body2">Risk Areas: {readinessPlan.documentAnalysis.riskAreas}</Typography>
+                                        <Typography variant="body2">Risk Areas: {readinessPlan.documentAnalysis?.riskAreas || 0}</Typography>
                                       </Grid>
                                     </Grid>
                                   </AccordionDetails>
@@ -662,16 +1044,16 @@ const TestCaseGeneration = () => {
                                   <AccordionDetails>
                                     <List dense>
                                       <ListItem>
-                                        <ListItemText primary={`Functional Tests: ${readinessPlan.testingStrategy.functionalTests}`} />
+                                        <ListItemText primary={`Functional Tests: ${readinessPlan.testingStrategy?.functionalTests || 0}`} />
                                       </ListItem>
                                       <ListItem>
-                                        <ListItemText primary={`Non-Functional Tests: ${readinessPlan.testingStrategy.nonFunctionalTests}`} />
+                                        <ListItemText primary={`Non-Functional Tests: ${readinessPlan.testingStrategy?.nonFunctionalTests || 0}`} />
                                       </ListItem>
                                       <ListItem>
-                                        <ListItemText primary={`Integration Tests: ${readinessPlan.testingStrategy.integrationTests}`} />
+                                        <ListItemText primary={`Integration Tests: ${readinessPlan.testingStrategy?.integrationTests || 0}`} />
                                       </ListItem>
                                       <ListItem>
-                                        <ListItemText primary={`Edge Cases: ${readinessPlan.testingStrategy.edgeCases}`} />
+                                        <ListItemText primary={`Edge Cases: ${readinessPlan.testingStrategy?.edgeCases || 0}`} />
                                       </ListItem>
                                     </List>
                                   </AccordionDetails>
@@ -686,31 +1068,52 @@ const TestCaseGeneration = () => {
                                       <Typography variant="body2">Requirements Coverage</Typography>
                                       <LinearProgress 
                                         variant="determinate" 
-                                        value={readinessPlan.coverage.requirementsCoverage}
+                                        value={readinessPlan.coverage?.requirementsCoverage || 0}
                                         sx={{ mt: 1 }}
                                       />
-                                      <Typography variant="caption">{readinessPlan.coverage.requirementsCoverage}%</Typography>
+                                      <Typography variant="caption">{readinessPlan.coverage?.requirementsCoverage || 0}%</Typography>
                                     </Box>
                                     <Box sx={{ mb: 2 }}>
                                       <Typography variant="body2">Feature Coverage</Typography>
                                       <LinearProgress 
                                         variant="determinate" 
-                                        value={readinessPlan.coverage.featureCoverage}
+                                        value={readinessPlan.coverage?.featureCoverage || 0}
                                         sx={{ mt: 1 }}
                                       />
-                                      <Typography variant="caption">{readinessPlan.coverage.featureCoverage}%</Typography>
+                                      <Typography variant="caption">{readinessPlan.coverage?.featureCoverage || 0}%</Typography>
                                     </Box>
                                     <Box>
                                       <Typography variant="body2">Risk Coverage</Typography>
                                       <LinearProgress 
                                         variant="determinate" 
-                                        value={readinessPlan.coverage.riskCoverage}
+                                        value={readinessPlan.coverage?.riskCoverage || 0}
                                         sx={{ mt: 1 }}
                                       />
-                                      <Typography variant="caption">{readinessPlan.coverage.riskCoverage}%</Typography>
+                                      <Typography variant="caption">{readinessPlan.coverage?.riskCoverage || 0}%</Typography>
                                     </Box>
                                   </AccordionDetails>
                                 </Accordion>
+
+                                {/* Recommendations Section */}
+                                {readinessPlan.recommendations && readinessPlan.recommendations.length > 0 && (
+                                  <Accordion>
+                                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                                      <Typography>Recommendations</Typography>
+                                    </AccordionSummary>
+                                    <AccordionDetails>
+                                      <List dense>
+                                        {readinessPlan.recommendations.map((recommendation, index) => (
+                                          <ListItem key={index}>
+                                            <ListItemIcon>
+                                              <CheckIcon color="primary" />
+                                            </ListItemIcon>
+                                            <ListItemText primary={typeof recommendation === 'string' ? recommendation : 'Recommendation not available'} />
+                                          </ListItem>
+                                        ))}
+                                      </List>
+                                    </AccordionDetails>
+                                  </Accordion>
+                                )}
                               </Box>
                             ) : (
                               <Typography variant="body2" color="text.secondary">
@@ -724,13 +1127,81 @@ const TestCaseGeneration = () => {
                       {/* Chat Interface */}
                       <Grid item xs={12} md={6}>
                         <Card sx={{ height: 500, display: 'flex', flexDirection: 'column' }}>
-                          <CardContent sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+                          <CardContent sx={{ flex: 1, display: 'flex', flexDirection: 'column', pb: 1 }}>
                             <Typography variant="h6" gutterBottom>
                               AI Assistant Chat
+                              {!assistantEnabled && (
+                                <Chip 
+                                  label="Assistant Disabled - Ready for Generation" 
+                                  size="small" 
+                                  color="success" 
+                                  sx={{ ml: 2 }}
+                                />
+                              )}
+                              {assistantEnabled && (
+                                <Chip 
+                                  label="Clarifications Needed" 
+                                  size="small" 
+                                  color="warning" 
+                                  sx={{ ml: 2 }}
+                                />
+                              )}
                             </Typography>
                             
                             {/* Chat Messages */}
-                            <Box sx={{ flex: 1, overflow: 'auto', mb: 2 }}>
+                            <Box 
+                              ref={chatMessagesRef}
+                              sx={{ 
+                                flex: 1, 
+                                minHeight: '300px',
+                                maxHeight: '350px',
+                                overflowY: 'scroll',
+                                overflowX: 'hidden',
+                                mb: 2,
+                                pr: 1,
+                                scrollBehavior: 'smooth',
+                                border: '1px solid rgba(0,0,0,0.1)',
+                                borderRadius: '8px',
+                                padding: '8px',
+                                backgroundColor: 'rgba(0,0,0,0.02)',
+                                // Custom scrollbar for webkit browsers
+                                '&::-webkit-scrollbar': {
+                                  width: '8px',
+                                },
+                                '&::-webkit-scrollbar-track': {
+                                  background: '#f1f1f1',
+                                  borderRadius: '4px',
+                                },
+                                '&::-webkit-scrollbar-thumb': {
+                                  background: '#888',
+                                  borderRadius: '4px',
+                                  '&:hover': {
+                                    background: '#555',
+                                  },
+                                },
+                                // Firefox scrollbar
+                                scrollbarWidth: 'thin',
+                                scrollbarColor: '#888 #f1f1f1',
+                              }}
+                            >
+                              {chatMessages.length === 0 && !isProcessing && (
+                                <Box sx={{ 
+                                  display: 'flex', 
+                                  alignItems: 'center', 
+                                  justifyContent: 'center', 
+                                  height: '100%',
+                                  flexDirection: 'column',
+                                  color: 'text.secondary'
+                                }}>
+                                  <ChatIcon sx={{ fontSize: 48, mb: 2, opacity: 0.3 }} />
+                                  <Typography variant="body2" align="center">
+                                    {assistantEnabled 
+                                      ? "Start a conversation by asking about requirements or test scenarios"
+                                      : "Requirements analysis complete. Ready for test case generation."
+                                    }
+                                  </Typography>
+                                </Box>
+                              )}
                               {chatMessages.map((message) => (
                                 <ChatMessage key={message.id} message={message} />
                               ))}
@@ -748,26 +1219,54 @@ const TestCaseGeneration = () => {
                               )}
                             </Box>
 
-                            {/* Chat Input */}
-                            <Box sx={{ display: 'flex', gap: 1 }}>
+                            {/* Chat Input - Fixed at bottom */}
+                            <Box 
+                              sx={{ 
+                                display: 'flex', 
+                                gap: 1,
+                                mt: 'auto',
+                                borderTop: '1px solid',
+                                borderColor: 'divider',
+                                pt: 2,
+                                backgroundColor: 'background.paper'
+                              }}
+                            >
                               <TextField
                                 fullWidth
                                 size="small"
-                                placeholder="Ask about requirements or test scenarios..."
+                                placeholder={
+                                  !assistantEnabled 
+                                    ? "Requirements are ready for test generation - Assistant disabled"
+                                    : isProcessing 
+                                      ? "AI is processing your message..."
+                                      : "Ask about requirements or test scenarios..."
+                                }
                                 value={newMessage}
                                 onChange={(e) => setNewMessage(e.target.value)}
                                 onKeyPress={(e) => {
-                                  if (e.key === 'Enter' && !e.shiftKey) {
+                                  if (e.key === 'Enter' && !e.shiftKey && assistantEnabled && !isProcessing) {
                                     e.preventDefault();
                                     handleSendMessage();
                                   }
                                 }}
-                                disabled={isProcessing}
+                                disabled={!assistantEnabled || isProcessing}
+                                sx={{
+                                  '& .MuiInputBase-input': {
+                                    color: !assistantEnabled ? 'text.disabled' : 'text.primary',
+                                  },
+                                  '& .MuiInputBase-input::placeholder': {
+                                    color: !assistantEnabled ? 'text.disabled' : 'text.secondary',
+                                    opacity: 1,
+                                  }
+                                }}
                               />
                               <IconButton 
                                 onClick={handleSendMessage}
-                                disabled={!newMessage.trim() || isProcessing}
+                                disabled={!assistantEnabled || !newMessage.trim() || isProcessing}
                                 color="primary"
+                                sx={{
+                                  opacity: !assistantEnabled ? 0.3 : 1,
+                                }}
                               >
                                 <SendIcon />
                               </IconButton>
@@ -784,7 +1283,7 @@ const TestCaseGeneration = () => {
                       <Button
                         variant="contained"
                         onClick={handleGenerateTestCases}
-                        disabled={!readinessPlan || isGenerating}
+                        disabled={!isReadyForGeneration || isGenerating}
                         startIcon={isGenerating ? <CircularProgress size={20} /> : <TestCaseIcon />}
                       >
                         {isGenerating ? 'Generating...' : 'Generate Test Cases'}
