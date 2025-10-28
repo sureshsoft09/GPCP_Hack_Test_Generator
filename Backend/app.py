@@ -41,6 +41,12 @@ async def call_agents_api(prompt: str) -> AgentResponse:
     data = r.json()
     return AgentResponse(response=data.get("response", ""), debug_info=data.get("debug_info", ""))
 
+@app.post("/review_requirement_specifications", response_model=AgentResponse)
+async def review_requirement_specifications(req: PromptRequest):
+    """Review requirement specifications using the agent."""
+    # build a helpful prompt for the agent
+    prompt = f"review the requirement specifications: {req.prompt}"
+    return await call_agents_api(prompt)
 
 @app.post("/generate_test_cases", response_model=AgentResponse)
 async def generate_test_cases(req: PromptRequest):
