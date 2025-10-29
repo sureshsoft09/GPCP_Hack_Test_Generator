@@ -35,6 +35,7 @@ class FirestoreConfig:
         # MCP Server Configuration
         self.server_name = "firestore-test-management"
         self.server_version = "1.0.0"
+        self.port = int(os.getenv("PORT", "8084"))
         
         # Logging
         self.log_level = os.getenv("LOG_LEVEL", "INFO")

@@ -8,33 +8,121 @@ with the Firestore test case management system.
 import json
 import logging
 from typing import Dict, Any, List, Optional, Union
+import asyncio
+from aiohttp import web, web_request, web_response
+import aiohttp_cors
 
-# Simple mock for MCP server functionality
+# MCP Server implementation with HTTP interface
 class MCPServer:
-    """Mock MCP Server for Firestore operations"""
+    """MCP Server for Firestore operations with HTTP interface"""
     
-    def __init__(self, name: str):
+    def __init__(self, name: str, port: int = 8084):
         self.name = name
+        self.port = port
         self.tools = {}
+        self.app = web.Application()
+        self.setup_routes()
+        self.setup_cors()
+    
+    def setup_routes(self):
+        """Setup HTTP routes for MCP tools"""
+        self.app.router.add_get('/', self.health_check)
+        self.app.router.add_get('/tools', self.list_tools)
+        self.app.router.add_post('/tools/{tool_name}', self.execute_tool)
+    
+    def setup_cors(self):
+        """Setup CORS for cross-origin requests"""
+        cors = aiohttp_cors.setup(self.app, defaults={
+            "*": aiohttp_cors.ResourceOptions(
+                allow_credentials=True,
+                expose_headers="*",
+                allow_headers="*",
+                allow_methods="*"
+            )
+        })
+        
+        # Add CORS to all routes
+        for route in list(self.app.router.routes()):
+            cors.add(route)
+    
+    async def health_check(self, request: web_request.Request) -> web_response.Response:
+        """Health check endpoint"""
+        return web.json_response({
+            "status": "healthy",
+            "server": self.name,
+            "tools_count": len(self.tools)
+        })
+    
+    async def list_tools(self, request: web_request.Request) -> web_response.Response:
+        """List available tools"""
+        tool_list = [{"name": name, "description": func.__doc__ or "No description"} 
+                    for name, func in self.tools.items()]
+        return web.json_response({"tools": tool_list})
+    
+    async def execute_tool(self, request: web_request.Request) -> web_response.Response:
+        """Execute a specific tool"""
+        tool_name = request.match_info['tool_name']
+        
+        if tool_name not in self.tools:
+            return web.json_response(
+                {"error": f"Tool '{tool_name}' not found"}, 
+                status=404
+            )
+        
+        try:
+            # Get request data
+            if request.content_type == 'application/json':
+                data = await request.json()
+            else:
+                data = {}
+            
+            # Execute the tool
+            result = await self.tools[tool_name](**data)
+            return web.json_response({"result": result})
+            
+        except Exception as e:
+            logging.error(f"Error executing tool {tool_name}: {e}")
+            return web.json_response(
+                {"error": str(e)}, 
+                status=500
+            )
     
     def tool(self, name: str):
+        """Decorator to register tools"""
         def decorator(func):
             self.tools[name] = func
             return func
         return decorator
     
     async def run(self):
-        """Run the server"""
-        print(f"MCP Server {self.name} is running with {len(self.tools)} tools")
-        # In a real implementation, this would start the actual MCP server
+        """Run the HTTP server"""
+        print(f"Starting MCP Server {self.name} on port {self.port}")
+        print(f"Available tools: {len(self.tools)}")
+        print(f"Health check: http://localhost:{self.port}/")
+        print(f"Tools list: http://localhost:{self.port}/tools")
+        
+        runner = web.AppRunner(self.app)
+        await runner.setup()
+        site = web.TCPSite(runner, 'localhost', self.port)
+        await site.start()
+        
+        print(f"MCP Server {self.name} is running on http://localhost:{self.port}")
+        
+        # Keep the server running
+        try:
+            await asyncio.Future()  # Run forever
+        except KeyboardInterrupt:
+            print(f"Shutting down MCP Server {self.name}")
+        finally:
+            await runner.cleanup()
 
-from .firestore_client import FirestoreClient
-from .models import (
+from firestore_client import FirestoreClient
+from models import (
     CreateProjectRequest, UpdateProjectRequest, SearchFilter,
     Project, Epic, Feature, UseCase, TestCase,
     JiraStatus, ProjectStatus, TestType, RiskLevel
 )
-from .config import config
+from config import config
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +130,7 @@ class FirestoreMCPServer:
     """MCP Server for Firestore operations"""
     
     def __init__(self):
-        self.server = MCPServer(config.server_name)
+        self.server = MCPServer(config.server_name, config.port)
         self.firestore_client = FirestoreClient()
         self._register_tools()
     

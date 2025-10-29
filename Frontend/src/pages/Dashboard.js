@@ -53,7 +53,9 @@ const Dashboard = () => {
       
       // Load projects
       const projectsResponse = await api.get('/projects');
-      setProjects(projectsResponse.data || []);
+      const projectsData = projectsResponse.data;
+      // Ensure projects is always an array
+      setProjects(Array.isArray(projectsData) ? projectsData : []);
 
       // Load statistics
       const statsResponse = await api.get('/analytics/overview');
@@ -309,7 +311,7 @@ const Dashboard = () => {
               </Button>
             </Box>
 
-            {projects.length === 0 ? (
+            {(!Array.isArray(projects) || projects.length === 0) ? (
               <Box sx={{ textAlign: 'center', py: 6 }}>
                 <ProjectIcon sx={{ fontSize: 64, color: 'text.secondary', mb: 2 }} />
                 <Typography variant="h6" color="text.secondary" sx={{ mb: 1 }}>
@@ -333,7 +335,7 @@ const Dashboard = () => {
               </Box>
             ) : (
               <Box>
-                {projects.map((project) => (
+                {Array.isArray(projects) && projects.map((project) => (
                   <ProjectCard key={project.id} project={project} />
                 ))}
               </Box>

@@ -20,6 +20,7 @@ load_dotenv()
 
 # Environment variables with Cloud Run friendly defaults
 AGENTS_API_URL = os.getenv("AGENTS_API_URL", "http://localhost:8082/query")
+RESET_AGENT_SESSION_API_URL = os.getenv("RESET_AGENT_SESSION_API_URL","http://localhost:8082/reset-session")
 TIMEOUT = float(os.getenv("AGENTS_API_TIMEOUT", "30"))
 PORT = int(os.getenv("PORT", "8083"))  # Cloud Run sets PORT environment variable
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
@@ -61,8 +62,8 @@ class AgentResponse(BaseModel):
     response: str
     debug_info: Optional[str] = ""
 
-async def call_agents_api(prompt: str,isnewproject:bool = False) -> AgentResponse:
-    payload = {"query": prompt, "newproject": isnewproject}
+async def call_agents_api(prompt: str) -> AgentResponse:
+    payload = {"query": prompt}
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         try:
             r = await client.post(AGENTS_API_URL, json=payload)
@@ -74,6 +75,19 @@ async def call_agents_api(prompt: str,isnewproject:bool = False) -> AgentRespons
 
     data = r.json()
     return AgentResponse(response=data.get("response", ""), debug_info=data.get("debug_info", ""))
+
+async def reset_agent_session():
+    """Reset the agent session to start fresh."""
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        try:
+            r = await client.post(RESET_AGENT_SESSION_API_URL)
+            if DEBUG:
+                print(f"Agent session reset response: {r.status_code}")
+            return r.status_code == 200
+        except httpx.RequestError as exc:
+            if DEBUG:
+                print(f"Error resetting agent session: {exc}")
+            return False
 
 @app.post("/upload_requirement_file", response_model=UploadResponse)
 async def upload_requirement_file(
@@ -140,6 +154,11 @@ async def review_requirement_specifications(req: ReviewRequest):
     if DEBUG:
         print(f"Processing review for project {req.project_name} with {len(extracted_content)} characters of content")
     
+    # Reset agent session to start fresh for this requirement review
+    session_reset = await reset_agent_session()
+    if DEBUG:
+        print(f"Agent session reset: {'successful' if session_reset else 'failed'}")
+    
     # Build a comprehensive prompt for the agent
     prompt = f"""
 Please review and analyze the following requirement specifications for project '{req.project_name}':
@@ -152,13 +171,17 @@ EXTRACTED CONTENT:
     # Update the stored data with review timestamp using the storage service
     content_storage_service.update_review_timestamp(req.project_name, req.project_id)
     
-    return await call_agents_api(prompt,True)
+    return await call_agents_api(prompt)
 
 @app.post("/generate_test_cases", response_model=AgentResponse)
 async def generate_test_cases(req: PromptRequest):
-    """Generate test cases using the agent."""
-    # build a helpful prompt for the agent
-    prompt = f"Generate test cases for: {req.prompt}"
+    """Generate test cases using the previously reviewed and approved requirement details."""
+    prompt = f"""
+    Generate test cases using the validated requirement details stored in memory.
+    Use the outputs from the requirement_reviewer_agent as the approved source.
+    Route this request through the test_generator_agent to create epics, features, use cases, and test cases.
+    User instruction: {req.prompt}
+    """
     return await call_agents_api(prompt)
 
 
