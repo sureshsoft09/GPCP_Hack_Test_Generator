@@ -1,6 +1,12 @@
+import asyncio
+import logging
+import os
+from typing import List, Dict, Any
+
+from fastmcp import FastMCP
+
 from typing import Any
 import httpx
-from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
 import os
 from jira import JIRA
@@ -15,6 +21,7 @@ mcp = FastMCP("jira")
 JIRA_BASE_URL = os.getenv("JIRA_BASE_URL")
 JIRA_EMAIL = os.getenv("JIRA_EMAIL")
 JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
+JIRA_PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY", "HS25Skillbug")
 
 # Validate required environment variables
 if not JIRA_BASE_URL:
@@ -28,10 +35,13 @@ JIRA_HEADERS = {
     "Authorization": f"Basic {JIRA_EMAIL}:{JIRA_API_TOKEN}",
     "Content-Type": "application/json"
 }
-auth_jira = JIRA(basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN))
+auth_jira = JIRA(server=JIRA_BASE_URL, basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN))
+
 class IssueCreateRequest(BaseModel):
-    project_key: str="HS25Skillbug"
+    project_key: str = JIRA_PROJECT_KEY
     summary: str
+    description: str
+    issue_type: str = "Bug"
     description: str
     issue_type: str = "Bug"
 
@@ -54,7 +64,7 @@ async def get_issues() -> dict[str, Any] | str:
     return data
 
 @mcp.tool()
-async def create_issue(project_key: str, summary: str, description: str, issue_type: str = "Task") -> dict[str, Any] | str:
+async def create_issue(project_key: str = JIRA_PROJECT_KEY, summary: str = "", description: str = "", issue_type: str = "Task") -> dict[str, Any] | str:
     """Create a new JIRA issue."""
     url = f"{JIRA_BASE_URL}/rest/api/3/issue"
     payload = {
@@ -82,7 +92,7 @@ async def search_issues(jql: str) -> dict[str, Any] | str:
     return data
 
 @mcp.tool()
-async def create_issue_in_project(project_key: str, summary: str, description: str, issue_type: str = "Task") -> dict[str, Any] | str:
+async def create_issue_in_project(project_key: str = JIRA_PROJECT_KEY, summary: str = "", description: str = "", issue_type: str = "Task") -> dict[str, Any] | str:
     """Create a new issue in a specific JIRA project.
 
     Args:
@@ -106,7 +116,7 @@ async def create_issue_in_project(project_key: str, summary: str, description: s
     return data
 
 @mcp.tool()
-async def get_issues_from_project(project_key: str) -> dict[str, Any] | str:
+async def get_issues_from_project(project_key: str = JIRA_PROJECT_KEY) -> dict[str, Any] | str:
     """Get all JIRA issues from a specific project.
     Args:
         project_key: The key of the JIRA project (e.g., 'ABC')
@@ -120,7 +130,7 @@ async def get_issues_from_project(project_key: str) -> dict[str, Any] | str:
     return data
 
 @mcp.tool()
-async def search_issues_in_project(project_key: str, jql_query: str) -> dict[str, Any] | str:
+async def search_issues_in_project(project_key: str = JIRA_PROJECT_KEY, jql_query: str = "") -> dict[str, Any] | str:
     """Search JIRA issues in a specific project using JQL.
     Args:
         project_key: The key of the JIRA project (e.g., 'ABC')
@@ -135,4 +145,11 @@ async def search_issues_in_project(project_key: str, jql_query: str) -> dict[str
     return data
 
 if __name__ == "__main__":
-    mcp.run(transport='streamable-http')
+    port = int(os.getenv("PORT", 8080))
+    asyncio.run(
+        mcp.run_async(
+            transport="http",
+            host="0.0.0.0",
+            port=port,
+        )
+    )

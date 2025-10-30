@@ -16,6 +16,20 @@ import {
   ListItemIcon,
   Avatar,
   Divider,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  CircularProgress,
+  Menu,
+  MenuItem,
+  ListItemButton,
+  Collapse,
+  Badge,
+  Tooltip,
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -27,12 +41,20 @@ import {
   TrendingUp as TrendingUpIcon,
   Schedule as ScheduleIcon,
   Warning as WarningIcon,
+  ExpandMore as ExpandMoreIcon,
+  ExpandLess as ExpandLessIcon,
+  Info as InfoIcon,
+  Download as DownloadIcon,
+  Visibility as ViewIcon,
+  Close as CloseIcon,
 } from '@mui/icons-material';
 import { useNotification } from '../contexts/NotificationContext';
 import api from '../services/api';
+import ExportService from '../services/exportService';
 
 const Dashboard = () => {
   const [projects, setProjects] = useState([]);
+  const [firestoreProjects, setFirestoreProjects] = useState([]);
   const [statistics, setStatistics] = useState({
     totalProjects: 0,
     totalTestCases: 0,
@@ -41,6 +63,18 @@ const Dashboard = () => {
   });
   const [recentActivity, setRecentActivity] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [selectedProject, setSelectedProject] = useState(null);
+  const [projectHierarchy, setProjectHierarchy] = useState(null);
+  const [hierarchyLoading, setHierarchyLoading] = useState(false);
+  const [modelExplanationDialog, setModelExplanationDialog] = useState({
+    open: false,
+    title: '',
+    explanation: '',
+    loading: false,
+  });
+  const [exportMenu, setExportMenu] = useState(null);
+  const [exportLoading, setExportLoading] = useState(false);
+  const [expandedItems, setExpandedItems] = useState({});
   const { showNotification } = useNotification();
 
   useEffect(() => {
@@ -51,18 +85,35 @@ const Dashboard = () => {
     try {
       setLoading(true);
       
-      // Load projects
-      const projectsResponse = await api.get('/projects');
+      // Load both regular projects and Firestore projects
+      const [projectsResponse, firestoreResponse, statsResponse, activityResponse] = await Promise.all([
+        api.get('/projects').catch(() => ({ data: [] })),
+        api.get('/api/projects').catch(() => ({ data: { projects: [] } })),
+        api.get('/api/statistics').catch(() => ({ data: { statistics: {} } })),
+        api.get('/analytics/recent-activity').catch(() => ({ data: [] })),
+      ]);
+
+      // Set regular projects
       const projectsData = projectsResponse.data;
-      // Ensure projects is always an array
       setProjects(Array.isArray(projectsData) ? projectsData : []);
 
-      // Load statistics
-      const statsResponse = await api.get('/analytics/overview');
-      setStatistics(statsResponse.data || statistics);
+      // Set Firestore projects
+      const firestoreData = firestoreResponse.data.projects || [];
+      setFirestoreProjects(Array.isArray(firestoreData) ? firestoreData : []);
 
-      // Load recent activity
-      const activityResponse = await api.get('/analytics/recent-activity');
+      // Update statistics to include Firestore data
+      const apiStats = statsResponse.data.statistics || {};
+      const firestoreStats = {
+        totalProjects: (projectsData?.length || 0) + (firestoreData?.length || 0),
+        totalTestCases: apiStats.total_test_cases || (firestoreData || []).reduce((sum, project) => sum + (project.total_test_cases || 0), 0),
+        totalEpics: apiStats.total_epics || 0,
+        totalFeatures: apiStats.total_features || 0,
+        totalUseCases: apiStats.total_use_cases || 0,
+        completedTests: Math.floor((apiStats.total_test_cases || 0) * 0.8),
+        pendingTests: Math.floor((apiStats.total_test_cases || 0) * 0.2),
+      };
+      
+      setStatistics({ ...statsResponse.data, ...firestoreStats });
       setRecentActivity(activityResponse.data || []);
 
     } catch (error) {
@@ -71,6 +122,91 @@ const Dashboard = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const loadProjectHierarchy = async (projectId) => {
+    try {
+      setHierarchyLoading(true);
+      const response = await api.get(`/api/projects/${projectId}/hierarchy`);
+      setProjectHierarchy(response.data.hierarchy);
+    } catch (error) {
+      console.error('Error loading project hierarchy:', error);
+      showNotification('Failed to load project details', 'error');
+    } finally {
+      setHierarchyLoading(false);
+    }
+  };
+
+  const handleProjectSelect = (project) => {
+    setSelectedProject(project);
+    loadProjectHierarchy(project.project_id);
+  };
+
+  const handleCloseProject = () => {
+    setSelectedProject(null);
+    setProjectHierarchy(null);
+    setExpandedItems({});
+  };
+
+  const handleModelExplanation = async (itemType, itemId, itemTitle) => {
+    if (!selectedProject) return;
+
+    setModelExplanationDialog({
+      open: true,
+      title: itemTitle,
+      explanation: '',
+      loading: true,
+    });
+
+    try {
+      const response = await api.get(`/api/projects/${selectedProject.project_id}/model-explanation`, {
+        params: { item_type: itemType, item_id: itemId }
+      });
+      
+      setModelExplanationDialog(prev => ({
+        ...prev,
+        explanation: response.data.explanation,
+        loading: false,
+      }));
+    } catch (error) {
+      console.error('Error loading model explanation:', error);
+      setModelExplanationDialog(prev => ({
+        ...prev,
+        explanation: 'Failed to load explanation',
+        loading: false,
+      }));
+    }
+  };
+
+  const handleExport = async (format) => {
+    if (!selectedProject) return;
+
+    try {
+      setExportLoading(true);
+      setExportMenu(null);
+      
+      // Get project data for export using the new API
+      const response = await api.get(`/api/projects/${selectedProject.project_id}/export-data`);
+      const exportData = response.data.project;
+      
+      // Use the existing frontend ExportService
+      const exportService = new ExportService();
+      await exportService.exportProject(exportData, format);
+      
+      showNotification(`Project exported as ${format.toUpperCase()}`, 'success');
+    } catch (error) {
+      console.error('Error exporting project:', error);
+      showNotification('Failed to export project', 'error');
+    } finally {
+      setExportLoading(false);
+    }
+  };
+
+  const toggleExpanded = (id) => {
+    setExpandedItems(prev => ({
+      ...prev,
+      [id]: !prev[id]
+    }));
   };
 
   const StatCard = ({ title, value, subtitle, icon, color = '#667eea' }) => (
@@ -107,18 +243,20 @@ const Dashboard = () => {
     </Card>
   );
 
-  const ProjectCard = ({ project }) => (
+  const ProjectCard = ({ project, isFirestore = false }) => (
     <Card
       sx={{
         mb: 2,
         background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.9) 0%, rgba(248, 250, 255, 0.9) 100%)',
         border: '1px solid rgba(102, 126, 234, 0.1)',
         transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+        cursor: isFirestore ? 'pointer' : 'default',
         '&:hover': {
-          transform: 'translateY(-2px)',
-          boxShadow: '0 6px 20px rgba(102, 126, 234, 0.12)',
+          transform: isFirestore ? 'translateY(-2px)' : 'none',
+          boxShadow: isFirestore ? '0 6px 20px rgba(102, 126, 234, 0.12)' : 'none',
         },
       }}
+      onClick={() => isFirestore && handleProjectSelect(project)}
     >
       <CardContent sx={{ p: 3 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
@@ -128,89 +266,281 @@ const Dashboard = () => {
             </Avatar>
             <Box>
               <Typography variant="h6" sx={{ fontWeight: 600 }}>
-                {project.name}
+                {project.project_name || project.name}
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                {project.description}
+                {project.description || 'No description available'}
               </Typography>
             </Box>
           </Box>
-          <Chip
-            label={project.status || 'Active'}
-            color={project.status === 'Active' ? 'success' : 'default'}
-            size="small"
-          />
-        </Box>
-
-        <Box sx={{ mb: 2 }}>
-          <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-            <Typography variant="body2" color="text.secondary">
-              Test Cases Progress
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              {project.completedTests || 0} / {project.totalTests || 0}
-            </Typography>
+          <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+            {isFirestore && (
+              <Chip
+                label="Firestore"
+                color="primary"
+                size="small"
+                variant="outlined"
+              />
+            )}
+            <Chip
+              label={project.status || 'Active'}
+              color={project.status === 'Active' ? 'success' : 'default'}
+              size="small"
+            />
           </Box>
-          <LinearProgress
-            variant="determinate"
-            value={project.totalTests ? (project.completedTests / project.totalTests) * 100 : 0}
-            sx={{
-              height: 8,
-              borderRadius: 4,
-              bgcolor: 'rgba(102, 126, 234, 0.1)',
-              '& .MuiLinearProgress-bar': {
-                background: 'linear-gradient(90deg, #667eea 0%, #764ba2 100%)',
-                borderRadius: 4,
-              },
-            }}
-          />
         </Box>
 
-        <Grid container spacing={2}>
-          <Grid item xs={3}>
-            <Box sx={{ textAlign: 'center' }}>
-              <Typography variant="h6" color="#667eea">
-                {project.epics || 0}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                Epics
-              </Typography>
-            </Box>
+        {isFirestore ? (
+          <Grid container spacing={2}>
+            <Grid item xs={4}>
+              <Box sx={{ textAlign: 'center' }}>
+                <Typography variant="h6" color="#667eea">
+                  {project.total_epics || 0}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Epics
+                </Typography>
+              </Box>
+            </Grid>
+            <Grid item xs={4}>
+              <Box sx={{ textAlign: 'center' }}>
+                <Typography variant="h6" color="#667eea">
+                  {project.total_test_cases || 0}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Test Cases
+                </Typography>
+              </Box>
+            </Grid>
+            <Grid item xs={4}>
+              <Box sx={{ textAlign: 'center' }}>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  startIcon={<ViewIcon />}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleProjectSelect(project);
+                  }}
+                >
+                  View Details
+                </Button>
+              </Box>
+            </Grid>
           </Grid>
-          <Grid item xs={3}>
-            <Box sx={{ textAlign: 'center' }}>
-              <Typography variant="h6" color="#667eea">
-                {project.features || 0}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                Features
-              </Typography>
+        ) : (
+          <>
+            <Box sx={{ mb: 2 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                <Typography variant="body2" color="text.secondary">
+                  Test Cases Progress
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {project.completedTests || 0} / {project.totalTests || 0}
+                </Typography>
+              </Box>
+              <LinearProgress
+                variant="determinate"
+                value={project.totalTests ? (project.completedTests / project.totalTests) * 100 : 0}
+                sx={{
+                  height: 8,
+                  borderRadius: 4,
+                  bgcolor: 'rgba(102, 126, 234, 0.1)',
+                  '& .MuiLinearProgress-bar': {
+                    background: 'linear-gradient(90deg, #667eea 0%, #764ba2 100%)',
+                    borderRadius: 4,
+                  },
+                }}
+              />
             </Box>
-          </Grid>
-          <Grid item xs={3}>
-            <Box sx={{ textAlign: 'center' }}>
-              <Typography variant="h6" color="#667eea">
-                {project.useCases || 0}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                Use Cases
-              </Typography>
-            </Box>
-          </Grid>
-          <Grid item xs={3}>
-            <Box sx={{ textAlign: 'center' }}>
-              <Typography variant="h6" color="#667eea">
-                {project.testCases || 0}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                Test Cases
-              </Typography>
-            </Box>
-          </Grid>
-        </Grid>
+
+            <Grid container spacing={2}>
+              <Grid item xs={3}>
+                <Box sx={{ textAlign: 'center' }}>
+                  <Typography variant="h6" color="#667eea">
+                    {project.epics || 0}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Epics
+                  </Typography>
+                </Box>
+              </Grid>
+              <Grid item xs={3}>
+                <Box sx={{ textAlign: 'center' }}>
+                  <Typography variant="h6" color="#667eea">
+                    {project.features || 0}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Features
+                  </Typography>
+                </Box>
+              </Grid>
+              <Grid item xs={3}>
+                <Box sx={{ textAlign: 'center' }}>
+                  <Typography variant="h6" color="#667eea">
+                    {project.useCases || 0}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Use Cases
+                  </Typography>
+                </Box>
+              </Grid>
+              <Grid item xs={3}>
+                <Box sx={{ textAlign: 'center' }}>
+                  <Typography variant="h6" color="#667eea">
+                    {project.testCases || 0}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Test Cases
+                  </Typography>
+                </Box>
+              </Grid>
+            </Grid>
+          </>
+        )}
       </CardContent>
     </Card>
   );
+
+  const HierarchyItem = ({ item, type, level = 0 }) => {
+    // Handle both field naming conventions - backend uses epic_id, feature_id, etc., frontend expects id
+    const getId = () => {
+      switch (type) {
+        case 'epic': return item.epic_id || item.id;
+        case 'feature': return item.feature_id || item.id;
+        case 'use_case': return item.use_case_id || item.id;
+        case 'test_case': return item.test_case_id || item.id;
+        default: return item.id;
+      }
+    };
+    
+    const itemId = `${type}-${getId()}`;
+    const isExpanded = expandedItems[itemId];
+    const hasChildren = 
+      (type === 'epic' && item.features?.length > 0) ||
+      (type === 'feature' && item.use_cases?.length > 0) ||
+      (type === 'use_case' && item.test_cases?.length > 0);
+
+    const getIcon = () => {
+      switch (type) {
+        case 'epic': return <EpicIcon />;
+        case 'feature': return <FeatureIcon />;
+        case 'use_case': return <UseCaseIcon />;
+        case 'test_case': return <TestCaseIcon />;
+        default: return null;
+      }
+    };
+
+    const getChildCount = () => {
+      switch (type) {
+        case 'epic': return item.features?.length || 0;
+        case 'feature': return item.use_cases?.length || 0;
+        case 'use_case': return item.test_cases?.length || 0;
+        default: return 0;
+      }
+    };
+
+    return (
+      <Box sx={{ ml: level * 2 }}>
+        <ListItem
+          sx={{
+            border: '1px solid rgba(102, 126, 234, 0.1)',
+            borderRadius: 1,
+            mb: 1,
+            bgcolor: 'rgba(255, 255, 255, 0.7)',
+            '&:hover': {
+              bgcolor: 'rgba(102, 126, 234, 0.05)',
+            },
+          }}
+        >
+          <ListItemIcon>
+            <Avatar
+              sx={{
+                bgcolor: `${level === 0 ? '#667eea' : level === 1 ? '#764ba2' : level === 2 ? '#4caf50' : '#ff9800'}20`,
+                color: level === 0 ? '#667eea' : level === 1 ? '#764ba2' : level === 2 ? '#4caf50' : '#ff9800',
+                width: 32,
+                height: 32,
+              }}
+            >
+              {getIcon()}
+            </Avatar>
+          </ListItemIcon>
+          
+          <ListItemText
+            primary={
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                  {item.title}
+                </Typography>
+                {hasChildren && (
+                  <Badge badgeContent={getChildCount()} color="primary" />
+                )}
+              </Box>
+            }
+            secondary={
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                {item.description}
+              </Typography>
+            }
+          />
+
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            {item.model_explanation && (
+              <Tooltip title="View AI Model Explanation">
+                <IconButton
+                  size="small"
+                  onClick={() => handleModelExplanation(type, getId(), item.title)}
+                  sx={{ color: '#667eea' }}
+                >
+                  <InfoIcon />
+                </IconButton>
+              </Tooltip>
+            )}
+            
+            {hasChildren && (
+              <IconButton
+                size="small"
+                onClick={() => toggleExpanded(itemId)}
+              >
+                {isExpanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+              </IconButton>
+            )}
+          </Box>
+        </ListItem>
+
+        {hasChildren && (
+          <Collapse in={isExpanded}>
+            <Box sx={{ ml: 1 }}>
+              {type === 'epic' && item.features?.map((feature) => (
+                <HierarchyItem
+                  key={feature.feature_id || feature.id}
+                  item={feature}
+                  type="feature"
+                  level={level + 1}
+                />
+              ))}
+              {type === 'feature' && item.use_cases?.map((useCase) => (
+                <HierarchyItem
+                  key={useCase.use_case_id || useCase.id}
+                  item={useCase}
+                  type="use_case"
+                  level={level + 1}
+                />
+              ))}
+              {type === 'use_case' && item.test_cases?.map((testCase) => (
+                <HierarchyItem
+                  key={testCase.test_case_id || testCase.id}
+                  item={testCase}
+                  type="test_case"
+                  level={level + 1}
+                />
+              ))}
+            </Box>
+          </Collapse>
+        )}
+      </Box>
+    );
+  };
 
   if (loading) {
     return (
@@ -221,6 +551,181 @@ const Dashboard = () => {
     );
   }
 
+  // Show project hierarchy view when a project is selected
+  if (selectedProject && projectHierarchy) {
+    return (
+      <Box>
+        {/* Project Header */}
+        <Box sx={{ mb: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Box>
+            <Typography
+              variant="h4"
+              sx={{
+                fontWeight: 700,
+                mb: 1,
+                background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                WebkitBackgroundClip: 'text',
+                WebkitTextFillColor: 'transparent',
+                backgroundClip: 'text',
+              }}
+            >
+              {projectHierarchy.project_name}
+            </Typography>
+            <Typography variant="subtitle1" color="text.secondary">
+              {projectHierarchy.description || 'Project test case hierarchy'}
+            </Typography>
+          </Box>
+          
+          <Box sx={{ display: 'flex', gap: 2 }}>
+            {/* Export Menu */}
+            <Button
+              variant="contained"
+              startIcon={exportLoading ? <CircularProgress size={16} /> : <DownloadIcon />}
+              onClick={(e) => setExportMenu(e.currentTarget)}
+              disabled={exportLoading}
+              sx={{
+                background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                '&:hover': {
+                  background: 'linear-gradient(135deg, #5a6fd8 0%, #6a4190 100%)',
+                },
+              }}
+            >
+              Export
+            </Button>
+            
+            <Button
+              variant="outlined"
+              startIcon={<CloseIcon />}
+              onClick={handleCloseProject}
+            >
+              Back to Dashboard
+            </Button>
+          </Box>
+        </Box>
+
+        {/* Project Statistics */}
+        <Grid container spacing={3} sx={{ mb: 4 }}>
+          <Grid item xs={12} sm={6} md={3}>
+            <StatCard
+              title="Total Epics"
+              value={projectHierarchy.epics?.length || 0}
+              subtitle="Project epics"
+              icon={<EpicIcon />}
+              color="#667eea"
+            />
+          </Grid>
+          <Grid item xs={12} sm={6} md={3}>
+            <StatCard
+              title="Total Features"
+              value={projectHierarchy.epics?.reduce((sum, epic) => sum + (epic.features?.length || 0), 0) || 0}
+              subtitle="Feature count"
+              icon={<FeatureIcon />}
+              color="#764ba2"
+            />
+          </Grid>
+          <Grid item xs={12} sm={6} md={3}>
+            <StatCard
+              title="Use Cases"
+              value={projectHierarchy.epics?.reduce((sum, epic) => 
+                sum + epic.features?.reduce((fSum, feature) => fSum + (feature.use_cases?.length || 0), 0), 0) || 0}
+              subtitle="Total use cases"
+              icon={<UseCaseIcon />}
+              color="#4caf50"
+            />
+          </Grid>
+          <Grid item xs={12} sm={6} md={3}>
+            <StatCard
+              title="Test Cases"
+              value={projectHierarchy.total_test_cases || 0}
+              subtitle="Total test cases"
+              icon={<TestCaseIcon />}
+              color="#ff9800"
+            />
+          </Grid>
+        </Grid>
+
+        {/* Hierarchical Structure */}
+        <Paper
+          sx={{
+            p: 3,
+            background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.9) 0%, rgba(248, 250, 255, 0.9) 100%)',
+            border: '1px solid rgba(102, 126, 234, 0.1)',
+          }}
+        >
+          <Typography variant="h6" sx={{ fontWeight: 600, mb: 3 }}>
+            Project Hierarchy: Epics → Features → Use Cases → Test Cases
+          </Typography>
+
+          {hierarchyLoading ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+              <CircularProgress />
+            </Box>
+          ) : (
+            <List>
+              {projectHierarchy.epics?.map((epic) => (
+                <HierarchyItem
+                  key={epic.epic_id || epic.id}
+                  item={epic}
+                  type="epic"
+                  level={0}
+                />
+              ))}
+            </List>
+          )}
+        </Paper>
+
+        {/* Export Menu */}
+        <Menu
+          anchorEl={exportMenu}
+          open={Boolean(exportMenu)}
+          onClose={() => setExportMenu(null)}
+        >
+          <MenuItem onClick={() => handleExport('pdf')}>
+            Export as PDF
+          </MenuItem>
+          <MenuItem onClick={() => handleExport('word')}>
+            Export as Word Document
+          </MenuItem>
+          <MenuItem onClick={() => handleExport('xml')}>
+            Export as XML
+          </MenuItem>
+          <MenuItem onClick={() => handleExport('markdown')}>
+            Export as Markdown
+          </MenuItem>
+        </Menu>
+
+        {/* Model Explanation Dialog */}
+        <Dialog
+          open={modelExplanationDialog.open}
+          onClose={() => setModelExplanationDialog({ ...modelExplanationDialog, open: false })}
+          maxWidth="md"
+          fullWidth
+        >
+          <DialogTitle>
+            AI Model Explanation: {modelExplanationDialog.title}
+          </DialogTitle>
+          <DialogContent>
+            {modelExplanationDialog.loading ? (
+              <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+                <CircularProgress />
+              </Box>
+            ) : (
+              <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap' }}>
+                {modelExplanationDialog.explanation}
+              </Typography>
+            )}
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setModelExplanationDialog({ ...modelExplanationDialog, open: false })}>
+              Close
+            </Button>
+          </DialogActions>
+        </Dialog>
+      </Box>
+    );
+  }
+
+  // Main dashboard view
   return (
     <Box>
       {/* Header */}
@@ -295,7 +800,7 @@ const Dashboard = () => {
           >
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
               <Typography variant="h6" sx={{ fontWeight: 600 }}>
-                Recent Projects
+                All Projects
               </Typography>
               <Button
                 variant="contained"
@@ -311,7 +816,7 @@ const Dashboard = () => {
               </Button>
             </Box>
 
-            {(!Array.isArray(projects) || projects.length === 0) ? (
+            {(!Array.isArray(projects) || projects.length === 0) && (!Array.isArray(firestoreProjects) || firestoreProjects.length === 0) ? (
               <Box sx={{ textAlign: 'center', py: 6 }}>
                 <ProjectIcon sx={{ fontSize: 64, color: 'text.secondary', mb: 2 }} />
                 <Typography variant="h6" color="text.secondary" sx={{ mb: 1 }}>
@@ -335,9 +840,29 @@ const Dashboard = () => {
               </Box>
             ) : (
               <Box>
-                {Array.isArray(projects) && projects.map((project) => (
-                  <ProjectCard key={project.id} project={project} />
-                ))}
+                {/* Firestore Projects */}
+                {Array.isArray(firestoreProjects) && firestoreProjects.length > 0 && (
+                  <>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2, color: '#667eea' }}>
+                      Test Case Projects (with Hierarchy)
+                    </Typography>
+                    {firestoreProjects.map((project) => (
+                      <ProjectCard key={project.project_id} project={project} isFirestore={true} />
+                    ))}
+                  </>
+                )}
+
+                {/* Regular Projects */}
+                {Array.isArray(projects) && projects.length > 0 && (
+                  <>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2, mt: 3, color: '#764ba2' }}>
+                      Requirement Projects
+                    </Typography>
+                    {projects.map((project) => (
+                      <ProjectCard key={project.id} project={project} isFirestore={false} />
+                    ))}
+                  </>
+                )}
               </Box>
             )}
           </Paper>
@@ -378,8 +903,8 @@ const Dashboard = () => {
                         </Avatar>
                       </ListItemIcon>
                       <ListItemText
-                        primary={activity.title}
-                        secondary={activity.description}
+                        primary={activity.title || activity.description}
+                        secondary={activity.timestamp}
                         primaryTypographyProps={{
                           fontSize: '0.9rem',
                           fontWeight: 500,

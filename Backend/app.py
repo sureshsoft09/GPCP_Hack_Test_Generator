@@ -1,12 +1,11 @@
 import os
 import uuid
 import tempfile
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import json
 from datetime import datetime
-
 import httpx
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -15,13 +14,23 @@ from dotenv import load_dotenv
 # Import our custom services
 from upload_and_extract_service import upload_extract_service
 from content_storage_service import content_storage_service
+from firestore_service import firestore_service
+
+# Firestore integration - Now handled by firestore_service
+try:
+    from google.cloud import firestore
+    from google.oauth2 import service_account
+    FIRESTORE_AVAILABLE = True
+except ImportError:
+    FIRESTORE_AVAILABLE = False
+    print("Warning: Firestore libraries not available. Install with: pip install google-cloud-firestore")
 
 load_dotenv()
 
 # Environment variables with Cloud Run friendly defaults
 AGENTS_API_URL = os.getenv("AGENTS_API_URL", "http://localhost:8082/query")
 RESET_AGENT_SESSION_API_URL = os.getenv("RESET_AGENT_SESSION_API_URL","http://localhost:8082/reset-session")
-TIMEOUT = float(os.getenv("AGENTS_API_TIMEOUT", "30"))
+TIMEOUT = float(os.getenv("AGENTS_API_TIMEOUT", "600"))
 PORT = int(os.getenv("PORT", "8083"))  # Cloud Run sets PORT environment variable
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 DEBUG = os.getenv("DEBUG", "true").lower() == "true"
@@ -61,6 +70,48 @@ class UploadResponse(BaseModel):
 class AgentResponse(BaseModel):
     response: str
     debug_info: Optional[str] = ""
+
+class TestCase(BaseModel):
+    id: str
+    title: str
+    description: str
+    test_steps: List[str]
+    expected_result: str
+    test_data: Optional[dict] = None
+    priority: str = "Medium"
+    tags: List[str] = []
+    model_explanation: Optional[str] = None
+
+class UseCase(BaseModel):
+    id: str
+    title: str
+    description: str
+    test_cases: List[TestCase] = []
+    model_explanation: Optional[str] = None
+
+class Feature(BaseModel):
+    id: str
+    title: str
+    description: str
+    use_cases: List[UseCase] = []
+    model_explanation: Optional[str] = None
+
+class Epic(BaseModel):
+    id: str
+    title: str
+    description: str
+    features: List[Feature] = []
+    model_explanation: Optional[str] = None
+
+class ProjectHierarchy(BaseModel):
+    project_id: str
+    project_name: str
+    description: Optional[str] = None
+    epics: List[Epic] = []
+    created_at: Optional[str] = None
+    last_updated: Optional[str] = None
+    total_test_cases: int = 0
+    model_explanation: Optional[str] = None
 
 async def call_agents_api(prompt: str) -> AgentResponse:
     payload = {"query": prompt}
@@ -226,6 +277,7 @@ async def req_clarification_chat_with_agent(req: PromptRequest):
     """
     return await call_agents_api(prompt)
 
+##Firestore Integration Endpoints
 
 @app.get("/projects")
 async def get_all_projects():
@@ -258,14 +310,18 @@ async def get_analytics_overview():
     """Get analytics overview for dashboard."""
     try:
         storage_stats = content_storage_service.get_storage_stats()
+        firestore_stats = await firestore_service.get_project_statistics()
         
+        # Combine both storage and Firestore statistics
         return {
-            "totalProjects": storage_stats.get("total_projects", 0),
-            "totalTestCases": storage_stats.get("total_projects", 0) * 25,  # Estimate
-            "completedTests": storage_stats.get("total_projects", 0) * 20,  # Estimate
-            "pendingTests": storage_stats.get("total_projects", 0) * 5,     # Estimate
+            "totalProjects": storage_stats.get("total_projects", 0) + firestore_stats.get("total_projects", 0),
+            "totalTestCases": firestore_stats.get("total_test_cases", 0),
+            "completedTests": int(firestore_stats.get("total_test_cases", 0) * 0.8),  # Estimate 80% completed
+            "pendingTests": int(firestore_stats.get("total_test_cases", 0) * 0.2),    # Estimate 20% pending
         }
     except Exception as e:
+        if DEBUG:
+            print(f"Error fetching analytics overview: {e}")
         return {
             "totalProjects": 0,
             "totalTestCases": 0,
@@ -320,16 +376,421 @@ async def get_project_info(project_id: str):
     
     return {"projects": matching_projects}
 
+# Firestore Integration Endpoints
+
+def convert_firestore_to_hierarchy(firestore_data: dict) -> ProjectHierarchy:
+    """Convert Firestore document to ProjectHierarchy model."""
+    try:
+        # Extract basic project info
+        project_id = firestore_data.get("project_id", "")
+        project_name = firestore_data.get("project_name", "")
+        description = firestore_data.get("description", "")
+        created_at = firestore_data.get("created_at", "")
+        last_updated = firestore_data.get("last_updated", "")
+        model_explanation = firestore_data.get("model_explanation", "")
+        
+        # Process epics
+        epics = []
+        total_test_cases = 0
+        
+        for epic_data in firestore_data.get("epics", []):
+            features = []
+            
+            for feature_data in epic_data.get("features", []):
+                use_cases = []
+                
+                for use_case_data in feature_data.get("use_cases", []):
+                    test_cases = []
+                    
+                    for test_case_data in use_case_data.get("test_cases", []):
+                        test_case = TestCase(
+                            id=test_case_data.get("id", ""),
+                            title=test_case_data.get("title", ""),
+                            description=test_case_data.get("description", ""),
+                            test_steps=test_case_data.get("test_steps", []),
+                            expected_result=test_case_data.get("expected_result", ""),
+                            test_data=test_case_data.get("test_data"),
+                            priority=test_case_data.get("priority", "Medium"),
+                            tags=test_case_data.get("tags", []),
+                            model_explanation=test_case_data.get("model_explanation", "")
+                        )
+                        test_cases.append(test_case)
+                        total_test_cases += 1
+                    
+                    use_case = UseCase(
+                        id=use_case_data.get("id", ""),
+                        title=use_case_data.get("title", ""),
+                        description=use_case_data.get("description", ""),
+                        test_cases=test_cases,
+                        model_explanation=use_case_data.get("model_explanation", "")
+                    )
+                    use_cases.append(use_case)
+                
+                feature = Feature(
+                    id=feature_data.get("id", ""),
+                    title=feature_data.get("title", ""),
+                    description=feature_data.get("description", ""),
+                    use_cases=use_cases,
+                    model_explanation=feature_data.get("model_explanation", "")
+                )
+                features.append(feature)
+            
+            epic = Epic(
+                id=epic_data.get("id", ""),
+                title=epic_data.get("title", ""),
+                description=epic_data.get("description", ""),
+                features=features,
+                model_explanation=epic_data.get("model_explanation", "")
+            )
+            epics.append(epic)
+        
+        return ProjectHierarchy(
+            project_id=project_id,
+            project_name=project_name,
+            description=description,
+            epics=epics,
+            created_at=created_at,
+            last_updated=last_updated,
+            total_test_cases=total_test_cases,
+            model_explanation=model_explanation
+        )
+    
+    except Exception as e:
+        if DEBUG:
+            print(f"Error converting Firestore data: {e}")
+        raise HTTPException(status_code=500, detail=f"Error processing project data: {str(e)}")
+
+@app.get("/firestore/projects", response_model=List[Dict[str, Any]])
+async def get_firestore_projects():
+    """Get all projects from Firestore."""
+    try:
+        projects = await firestore_service.get_all_projects()
+        return projects
+    except Exception as e:
+        if DEBUG:
+            print(f"Error fetching Firestore projects: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch projects: {str(e)}")
+
+@app.get("/firestore/projects/{project_id}/hierarchy", response_model=ProjectHierarchy)
+async def get_project_hierarchy(project_id: str):
+    """Get complete project hierarchy from Firestore."""
+    try:
+        project_data = await firestore_service.get_project_hierarchy(project_id)
+        
+        if not project_data:
+            raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+        
+        # Convert to hierarchical structure
+        hierarchy = convert_firestore_to_hierarchy(project_data)
+        return hierarchy
+    except HTTPException:
+        raise
+    except Exception as e:
+        if DEBUG:
+            print(f"Error fetching project hierarchy: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch project hierarchy: {str(e)}")
+
+@app.get("/firestore/projects/{project_id}/model-explanation")
+async def get_model_explanation(
+    project_id: str,
+    item_type: str = Query(..., description="Type: project, epic, feature, use_case, test_case"),
+    item_id: str = Query(..., description="ID of the specific item")
+):
+    """Get model explanation for a specific item in the project hierarchy."""
+    try:
+        explanation = await firestore_service.get_model_explanation(project_id, item_type, item_id)
+        
+        if explanation is None:
+            raise HTTPException(status_code=404, detail=f"{item_type} with ID {item_id} not found")
+        
+        return {"model_explanation": explanation or "No explanation available"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        if DEBUG:
+            print(f"Error fetching model explanation: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch model explanation: {str(e)}")
+
+@app.get("/firestore/projects/{project_id}/export-data")
+async def get_project_export_data(project_id: str):
+    """Get project data formatted for export."""
+    try:
+        project_data = await firestore_service.get_project_hierarchy(project_id)
+        
+        if not project_data:
+            raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+        
+        # Convert to hierarchical structure for processing
+        hierarchy = convert_firestore_to_hierarchy(project_data)
+        
+        # Format data for export service
+        export_data = {
+            "project": {
+                "id": hierarchy.project_id,
+                "name": hierarchy.project_name,
+                "description": hierarchy.description or "",
+                "created_at": hierarchy.created_at,
+                "last_updated": hierarchy.last_updated,
+                "total_test_cases": hierarchy.total_test_cases,
+                "model_explanation": hierarchy.model_explanation or ""
+            },
+            "epics": []
+        }
+        
+        for epic in hierarchy.epics:
+            epic_data = {
+                "id": epic.id,
+                "title": epic.title,
+                "description": epic.description,
+                "model_explanation": epic.model_explanation or "",
+                "features": []
+            }
+            
+            for feature in epic.features:
+                feature_data = {
+                    "id": feature.id,
+                    "title": feature.title,
+                    "description": feature.description,
+                    "model_explanation": feature.model_explanation or "",
+                    "use_cases": []
+                }
+                
+                for use_case in feature.use_cases:
+                    use_case_data = {
+                        "id": use_case.id,
+                        "title": use_case.title,
+                        "description": use_case.description,
+                        "model_explanation": use_case.model_explanation or "",
+                        "test_cases": []
+                    }
+                    
+                    for test_case in use_case.test_cases:
+                        test_case_data = {
+                            "id": test_case.id,
+                            "title": test_case.title,
+                            "description": test_case.description,
+                            "test_steps": test_case.test_steps,
+                            "expected_result": test_case.expected_result,
+                            "test_data": test_case.test_data,
+                            "priority": test_case.priority,
+                            "tags": test_case.tags,
+                            "model_explanation": test_case.model_explanation or ""
+                        }
+                        use_case_data["test_cases"].append(test_case_data)
+                    
+                    feature_data["use_cases"].append(use_case_data)
+                
+                epic_data["features"].append(feature_data)
+            
+            export_data["epics"].append(epic_data)
+        
+        return export_data
+    except HTTPException:
+        raise
+    except Exception as e:
+        if DEBUG:
+            print(f"Error preparing export data: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to prepare export data: {str(e)}")
+
+@app.post("/firestore/projects")
+async def create_firestore_project(project_data: Dict[str, Any]):
+    """Create a new project in Firestore."""
+    try:
+        project_id = await firestore_service.create_project(project_data)
+        return {"project_id": project_id, "message": "Project created successfully"}
+    except Exception as e:
+        if DEBUG:
+            print(f"Error creating project: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create project: {str(e)}")
+
+@app.put("/firestore/projects/{project_id}")
+async def update_firestore_project(project_id: str, project_data: Dict[str, Any]):
+    """Update an existing project in Firestore."""
+    try:
+        success = await firestore_service.update_project(project_id, project_data)
+        if success:
+            return {"message": "Project updated successfully"}
+        else:
+            raise HTTPException(status_code=404, detail="Project not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        if DEBUG:
+            print(f"Error updating project: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update project: {str(e)}")
+
+@app.delete("/firestore/projects/{project_id}")
+async def delete_firestore_project(project_id: str):
+    """Delete a project from Firestore."""
+    try:
+        success = await firestore_service.delete_project(project_id)
+        if success:
+            return {"message": "Project deleted successfully"}
+        else:
+            raise HTTPException(status_code=404, detail="Project not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        if DEBUG:
+            print(f"Error deleting project: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete project: {str(e)}")
+
+@app.get("/firestore/statistics")
+async def get_firestore_statistics():
+    """Get overall Firestore statistics."""
+    try:
+        stats = await firestore_service.get_project_statistics()
+        return stats
+    except Exception as e:
+        if DEBUG:
+            print(f"Error fetching statistics: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch statistics: {str(e)}")
+
+# ================================
+# ENHANCED FIRESTORE PROJECT ENDPOINTS
+# ================================
+
+@app.get("/api/projects")
+async def get_all_projects():
+    """Get all projects from Firestore"""
+    try:
+        projects = firestore_service.get_all_projects()
+        return {"projects": projects}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching projects: {str(e)}")
+
+@app.get("/api/projects/{project_id}")
+async def get_project_by_id(project_id: str):
+    """Get a specific project by ID"""
+    try:
+        project = firestore_service.get_project_by_id(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        return {"project": project}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching project: {str(e)}")
+
+@app.get("/api/projects/{project_id}/hierarchy")
+async def get_project_hierarchy(project_id: str):
+    """Get complete project hierarchy"""
+    try:
+        hierarchy = firestore_service.get_project_hierarchy(project_id)
+        if not hierarchy:
+            raise HTTPException(status_code=404, detail="Project not found")
+        return {"hierarchy": hierarchy}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching project hierarchy: {str(e)}")
+
+@app.get("/api/projects/{project_id}/model-explanation")
+async def get_model_explanation(project_id: str, item_type: str = Query(...), item_id: str = Query(...)):
+    """Get model explanation for a specific item"""
+    try:
+        explanation = firestore_service.get_model_explanation(project_id, item_type, item_id)
+        if explanation is None:
+            raise HTTPException(status_code=404, detail="Item not found or no explanation available")
+        return {"explanation": explanation}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching model explanation: {str(e)}")
+
+@app.post("/api/projects/{project_id}/search")
+async def search_test_cases(project_id: str, search_data: dict):
+    """Search test cases within a project"""
+    try:
+        search_term = search_data.get("search_term", "")
+        if not search_term:
+            raise HTTPException(status_code=400, detail="Search term is required")
+        
+        results = firestore_service.search_test_cases(project_id, search_term)
+        return {"results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error searching test cases: {str(e)}")
+
+# ================================
+# HIERARCHY MANAGEMENT ENDPOINTS
+# ================================
+
+@app.post("/api/projects/{project_id}/epics")
+async def add_epic_to_project(project_id: str, epic_data: dict):
+    """Add an epic to a project"""
+    try:
+        success = firestore_service.add_epic_to_project(project_id, epic_data)
+        if not success:
+            raise HTTPException(status_code=404, detail="Project not found")
+        return {"message": "Epic added successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error adding epic: {str(e)}")
+
+@app.post("/api/projects/{project_id}/epics/{epic_id}/features")
+async def add_feature_to_epic(project_id: str, epic_id: str, feature_data: dict):
+    """Add a feature to an epic"""
+    try:
+        success = firestore_service.add_feature_to_epic(project_id, epic_id, feature_data)
+        if not success:
+            raise HTTPException(status_code=404, detail="Project or epic not found")
+        return {"message": "Feature added successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error adding feature: {str(e)}")
+
+@app.post("/api/projects/{project_id}/epics/{epic_id}/features/{feature_id}/use-cases")
+async def add_use_case_to_feature(project_id: str, epic_id: str, feature_id: str, use_case_data: dict):
+    """Add a use case to a feature"""
+    try:
+        success = firestore_service.add_use_case_to_feature(project_id, epic_id, feature_id, use_case_data)
+        if not success:
+            raise HTTPException(status_code=404, detail="Project, epic, or feature not found")
+        return {"message": "Use case added successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error adding use case: {str(e)}")
+
+@app.post("/api/projects/{project_id}/epics/{epic_id}/features/{feature_id}/use-cases/{use_case_id}/test-cases")
+async def add_test_case_to_use_case(project_id: str, epic_id: str, feature_id: str, use_case_id: str, test_case_data: dict):
+    """Add a test case to a use case"""
+    try:
+        success = firestore_service.add_test_case_to_use_case(project_id, epic_id, feature_id, use_case_id, test_case_data)
+        if not success:
+            raise HTTPException(status_code=404, detail="Project, epic, feature, or use case not found")
+        return {"message": "Test case added successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error adding test case: {str(e)}")
+
+@app.post("/api/projects/{project_id}/bulk-create")
+async def bulk_create_structure(project_id: str, structure_data: dict):
+    """Bulk create project structure from hierarchical data"""
+    try:
+        result = firestore_service.bulk_create_from_structure(project_id, structure_data)
+        return {"result": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error bulk creating structure: {str(e)}")
+
+# ================================
+# EXPORT ENDPOINTS
+# ================================
+
+@app.get("/api/projects/{project_id}/export-data")
+async def get_project_export_data(project_id: str):
+    """Get project data formatted for export (used by frontend export service)"""
+    try:
+        # Get project data
+        project_data = firestore_service.get_project_by_id(project_id)
+        if not project_data:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        return {"project": project_data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting export data: {str(e)}")
+
 @app.get("/health")
 async def health():
     storage_stats = content_storage_service.get_storage_stats()
     service_config = upload_extract_service
+    firestore_status = firestore_service.is_available()
     
     return {
         "status": "ok", 
         "agents_api_url": AGENTS_API_URL,
         "environment": ENVIRONMENT,
         "debug": DEBUG,
+        "firestore_available": firestore_status,
         "google_cloud_bucket": service_config.google_cloud_bucket,
         "max_file_size_mb": service_config.max_file_size / 1024 / 1024,
         "allowed_file_types": service_config.allowed_file_types,

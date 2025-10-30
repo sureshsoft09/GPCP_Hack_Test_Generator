@@ -4,8 +4,7 @@ from pathlib import Path
 import google.auth
 from dotenv import load_dotenv
 from google.adk.agents import Agent,SequentialAgent
-from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
-from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
+from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StreamableHTTPConnectionParams
 from google.cloud import logging as google_cloud_logging
 
 # Load environment variables from .env file in root directory
@@ -29,11 +28,11 @@ FireStoreMCP_Tool = MCPToolset(
                                     url=FIRESTORE_MCP_URL,
                                 ),
                               )
-"""JiraMCP_Tool = MCPToolset(
+JiraMCP_Tool = MCPToolset(
                               connection_params=StreamableHTTPConnectionParams(
                                   url=JIRA_MCP_URL,
                               ),
-                            )"""
+                            )
 
 
 planner_agent = Agent(
@@ -587,249 +586,24 @@ integration_agent = Agent(
     name="integration_agent",
     model="gemini-2.5-flash",
     instruction="""
-You are the INTEGRATION_AGENT — the final stage in the test case generation pipeline. You receive the finalized, reviewed test case structure from the reviewer_agent and handle the storage into Firestore database and creation of corresponding items in Jira for project management and tracking.
+    There is a MCP tool JIRA MCP tool which have few toosl for creating issues in JIRA
+    
+    Use JIRA MCP to Create Issues:   
+    - Pass the issue type as `EPIC` for the main requirement.   
+    - Pass the issue type as `New Feature` for each derived feature.
+    - Pass the issue type as `Improvement` for each use cases.   
+    - Pass the issue type as `Task` for each test case if required.
+    - Ensure each feature is linked to the EPIC. Example Output Format:EPICIssue Type: EPIC Summary: [Epic Summary] Description: [Epic Description]FeaturesIssue Type: New Feature Summary: [Feature 1 Summary] Description: [Feature 1 Description] Issue Type: New Feature Summary: [Feature 2 Summary] Description: [Feature 2 Description]
 
----
-Note : As of now, only Firestoremcp is connectecd. Jira MCP connection to be done in future iterations.
-
-### CORE PURPOSE
-1. **Process reviewer_agent output** - Transform finalized test case structure into storage-ready format
-2. **Store in Firestore** - Persist complete test hierarchy with proper relationships and metadata
-3. **Create Jira items** - Generate corresponding Jira issues for project management and execution tracking
-4. **Maintain synchronization** - Ensure Firestore and Jira are properly linked and synchronized
-5. **Provide completion confirmation** - Return detailed storage results and next action steps
-
----
-
-### INPUT PROCESSING FROM REVIEWER_AGENT
-
-**Expected Input Structure from reviewer_agent:**
-```json
-{
-  "review_status": "approved",
-  "project_metadata": {
-    "project_id": "proj_123",
-    "project_name": "Healthcare System",
-    "created_date": "2025-10-29",
-    "estimated_counts": { "epics": 4, "features": 12, "use_cases": 28, "test_cases": 75 }
-  },
-  "finalized_test_structure": {
-    "epics": [
-      {
-        "epic_id": "E001",
-        "title": "User Authentication & Authorization",
-        "description": "Complete user management system",
-        "priority": "High",
-        "compliance_tags": ["FDA-21CFR11", "HIPAA"],
-        "features": [
-          {
-            "feature_id": "F001",
-            "title": "User Login System",
-            "description": "Secure user authentication",
-            "acceptance_criteria": [...],
-            "use_cases": [
-              {
-                "use_case_id": "UC001",
-                "title": "Valid User Login",
-                "preconditions": [...],
-                "steps": [...],
-                "expected_results": [...],
-                "test_cases": [
-                  {
-                    "test_case_id": "TC001",
-                    "title": "Login with valid credentials",
-                    "priority": "High",
-                    "test_type": "Functional",
-                    "steps": [...],
-                    "expected_result": "User successfully logged in",
-                    "compliance_notes": "FDA validation required"
-                  }
-                ]
-              }
-            ]
-          }
-        ]
-      }
-    ]
-  },
-  "quality_metrics": {
-    "coverage_score": 95,
-    "compliance_score": 100,
-    "traceability_score": 98
-  }
-}
-```
-
----
-
-### PROCESSING WORKFLOW
-
-#### **Step 1: Validate and Transform Input**
-- Verify review_status is "approved"
-- Extract project metadata and test structure
-- Validate data integrity and required fields
-- Transform structure for Firestore/Jira compatibility
-
-#### **Step 2: Firestore Storage Operations**
-```
-1. create_project() → Create project container with metadata
-2. import_test_structure() → Bulk import entire hierarchy
-   OR use individual operations:
-   - add_epic() for each epic
-   - add_feature() for each feature under epics
-   - add_use_case() for each use case under features
-   - add_test_case() for each test case under use cases
-```
-
-#### **Step 3: Jira Integration Operations**
-- Create Jira project (if needed)
-- Create Epic issues for each epic
-- Create Story/Task issues for critical features
-- Link Jira issues with Firestore IDs
-- Set appropriate Jira workflows and statuses
-- Use `update_epic_jira_status()` for status synchronization
-
-#### **Step 4: Verification and Analytics**
-- Use `get_project_statistics()` to verify storage success
-- Generate completion metrics
-- Create audit trail
-
----
-
-### FIRESTORE DATA MAPPING
-
-**Project Structure:**
-```json
-{
-  "project_id": "from reviewer_agent",
-  "name": "from project_metadata.project_name",
-  "created_date": "from project_metadata.created_date",
-  "status": "completed",
-  "estimated_counts": "from project_metadata.estimated_counts",
-  "quality_metrics": "from reviewer_agent quality_metrics",
-  "compliance_standards": ["extracted from epic compliance_tags"]
-}
-```
-
-**Epic/Feature/UseCase/TestCase Structure:**
-- Preserve all IDs from reviewer_agent
-- Add Firestore-specific metadata (timestamps, relationships)
-- Include compliance and quality annotations
-- Maintain parent-child relationships
-
----
-
-### JIRA INTEGRATION MAPPING
-
-**Jira Issue Types:**
-- **Epic** → Jira Epic (for each epic from reviewer_agent)
-- **Feature** → Jira Story (for high-priority features)
-- **Use Case** → Jira Sub-task (linked to parent feature story)
-- **Test Case** → Jira Test (using Jira test management fields)
-
-**Jira Fields Mapping:**
-- **Summary**: Use title from reviewer_agent
-- **Description**: Use description + acceptance_criteria
-- **Priority**: Map priority levels (High/Medium/Low)
-- **Labels**: Use compliance_tags as Jira labels
-- **Custom Fields**: Add test_type, compliance_notes
-- **Links**: Create "relates to" links between hierarchy levels
-
----
-
-### OUTPUT FORMAT
-
-**Successful Integration Response:**
-```json
-{
-  "integration_status": "success",
-  "processing_summary": {
-    "input_source": "reviewer_agent",
-    "review_status": "approved",
-    "processing_timestamp": "2025-10-29T10:30:00Z"
-  },
-  "firestore_results": {
-    "project_id": "proj_123",
-    "project_created": true,
-    "items_stored": {
-      "epics": 4,
-      "features": 12,
-      "use_cases": 28,
-      "test_cases": 75
-    },
-    "storage_ids": {
-      "firestore_project_id": "firestore_proj_123",
-      "epic_ids": ["fs_e001", "fs_e002", ...],
-      "total_items": 119
-    }
-  },
-  "jira_results": {
-    "jira_project_key": "MED-123",
-    "issues_created": {
-      "epics": 4,
-      "stories": 8,
-      "sub_tasks": 12,
-      "tests": 25
-    },
-    "jira_links": {
-      "epic_e001": "MED-1",
-      "feature_f001": "MED-2",
-      ...
-    }
-  },
-  "synchronization": {
-    "firestore_jira_links": "established",
-    "bidirectional_sync": "enabled",
-    "traceability_verified": true
-  },
-  "final_statistics": {
-    "total_items_processed": 119,
-    "success_rate": "100%",
-    "compliance_coverage": "100%",
-    "estimated_execution_time": "40 hours"
-  },
-  "next_actions": [
-    "Test cases are now stored in Firestore with IDs: [firestore_ids]",
-    "Jira project MED-123 created with 49 issues ready for execution",
-    "Test execution teams can begin work using Jira workflow",
-    "Progress tracking available through integrated dashboards",
-    "Quality metrics and compliance reports are available"
-  ]
-}
-```
-
----
-
-### ERROR HANDLING SPECIFIC TO REVIEWER_AGENT OUTPUT
-
-- **Invalid review_status**: If not "approved", request reprocessing
-- **Missing required fields**: Return specific field validation errors
-- **Structure inconsistencies**: Report hierarchy validation issues
-- **Firestore storage failures**: Implement retry with exponential backoff
-- **Jira creation failures**: Continue with Firestore, flag for manual Jira sync
-- **Partial failures**: Complete successful operations, provide detailed failure report
-
----
-
-### QUALITY ASSURANCE
-
-1. **Data Integrity Verification**: Ensure all reviewer_agent IDs are preserved
-2. **Relationship Validation**: Verify parent-child links are maintained
-3. **Compliance Preservation**: Ensure all compliance tags and notes are stored
-4. **Traceability Maintenance**: Create audit trail from requirement to test case
-5. **Performance Tracking**: Monitor storage operation duration and success rates
-
----
-
-Always prioritize data integrity and provide comprehensive status reporting for successful project handoff to execution teams.
+    Get the inputs from above agnet or from the user directly the epics and test cases then create JIRA issues using the JIRA MCP tool.
 """,
-    tools=[FireStoreMCP_Tool] 
+    tools=[JiraMCP_Tool]
 )
 
 test_generator_agent = SequentialAgent(
     name="test_generator_agent",
     sub_agents=[planner_agent, compliance_agent, test_engineer_agent, reviewer_agent,integration_agent],
-    description="Executes a sequence of code writing, reviewing, and refactoring.",    
+    description="Coordinates the complete test case generation lifecycle — from planning and compliance validation to test creation, review, and system integration. The integration_agent connects outputs seamlessly with Jira and Firestore for tracking and storage.",    
 )
 
 

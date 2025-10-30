@@ -68,6 +68,7 @@ import {
   Person as PersonIcon
 } from '@mui/icons-material';
 import { TreeView, TreeItem } from '@mui/x-tree-view';
+import ExportService from '../services/exportService';
 
 const TestCaseGeneration = () => {
   // Refs
@@ -94,6 +95,7 @@ const TestCaseGeneration = () => {
   const [readinessPlan, setReadinessPlan] = useState(null);
   const [generatedTestCases, setGeneratedTestCases] = useState([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [testGenerationStats, setTestGenerationStats] = useState(null);
   const [exportFormat, setExportFormat] = useState('pdf');
   const [notification, setNotification] = useState({ open: false, message: '', type: 'info' });
 
@@ -577,7 +579,7 @@ const TestCaseGeneration = () => {
       
       console.log('Test case generation response:', response);
 
-      // Parse the response - similar to other agent responses
+      // Parse the response - handle the new agent response structure
       const responseString = response.data.response || response.data;
       let testCaseData;
       
@@ -592,28 +594,62 @@ const TestCaseGeneration = () => {
         } catch (parseError) {
           console.error('Failed to parse test case response:', parseError);
           // Fallback to mock data if parsing fails
-          testCaseData = { generated_test_cases: [] };
+          testCaseData = { test_generation_status: { status: 'failed' } };
         }
       } else {
         testCaseData = responseString;
       }
 
-      // Transform backend response to frontend format
-      let transformedTestCases = [];
+      // Check if test generation was completed successfully
+      const testGenerationStatus = testCaseData.test_generation_status;
       
-      if (testCaseData.generated_test_cases && Array.isArray(testCaseData.generated_test_cases)) {
-        transformedTestCases = testCaseData.generated_test_cases;
-      } else if (Array.isArray(testCaseData)) {
-        transformedTestCases = testCaseData;
-      } else {
-        // Generate fallback test cases if no valid response
-        transformedTestCases = generateFallbackTestCases();
-      }
+      if (testGenerationStatus && testGenerationStatus.status === 'completed') {
+        // Test cases were successfully generated and stored
+        console.log('Test cases generated successfully:', testGenerationStatus);
+        
+        // Update UI with generation statistics
+        setTestGenerationStats({
+          epics_created: testGenerationStatus.epics_created || 0,
+          features_created: testGenerationStatus.features_created || 0,
+          use_cases_created: testGenerationStatus.use_cases_created || 0,
+          test_cases_created: testGenerationStatus.test_cases_created || 0,
+          approved_items: testGenerationStatus.approved_items || 0,
+          clarifications_needed: testGenerationStatus.clarifications_needed || 0,
+          stored_in_firestore: testGenerationStatus.stored_in_firestore || false,
+          pushed_to_jira: testGenerationStatus.pushed_to_jira || false
+        });
 
-      setGeneratedTestCases(transformedTestCases);
-      setIsGenerating(false);
-      setActiveStep(4);
-      showNotification(`Successfully generated ${transformedTestCases.length} test case categories!`, 'success');
+        // Transform backend response to frontend format
+        let transformedTestCases = [];
+        
+        if (testCaseData.generated_test_cases && Array.isArray(testCaseData.generated_test_cases)) {
+          transformedTestCases = testCaseData.generated_test_cases;
+        } else if (Array.isArray(testCaseData)) {
+          transformedTestCases = testCaseData;
+        } else {
+          // Generate fallback test cases to show user the generation was successful
+          transformedTestCases = generateFallbackTestCases();
+        }
+
+        setGeneratedTestCases(transformedTestCases);
+        setIsGenerating(false);
+        setActiveStep(3); // Go to step 4 (0-indexed, so 3 = step 4)
+        
+        const successMessage = `Successfully generated ${testGenerationStatus.test_cases_created || transformedTestCases.length} test cases! ` +
+          `Stored in Firestore: ${testGenerationStatus.stored_in_firestore ? 'Yes' : 'No'}, ` +
+          `Pushed to Jira: ${testGenerationStatus.pushed_to_jira ? 'Yes' : 'No'}`;
+        showNotification(successMessage, 'success');
+        
+      } else {
+        // Test generation failed or is still in progress
+        const status = testGenerationStatus?.status || 'unknown';
+        console.log('Test generation status:', status);
+        
+        setIsGenerating(false);
+        showNotification(`Test generation status: ${status}. Please try again if needed.`, 'warning');
+        
+        // Don't advance to next step if generation wasn't completed
+      }
       
     } catch (error) {
       console.error('Test case generation error:', error);
@@ -623,10 +659,10 @@ const TestCaseGeneration = () => {
       const errorMessage = error.response?.data?.detail || error.message || 'Failed to generate test cases. Please try again.';
       showNotification(errorMessage, 'error');
       
-      // Optionally, still show fallback test cases for demo purposes
-      const fallbackTestCases = generateFallbackTestCases();
-      setGeneratedTestCases(fallbackTestCases);
-      setActiveStep(4);
+      // Don't advance to next step on error - let user try again
+      // Optionally, show fallback test cases for demo purposes but don't advance step
+      // const fallbackTestCases = generateFallbackTestCases();
+      // setGeneratedTestCases(fallbackTestCases);
     }
   };
 
@@ -699,43 +735,67 @@ const TestCaseGeneration = () => {
   };
 
   // Step 5: Export Test Cases
-  const handleExportTestCases = async () => {
+  const handleExportTestCases = async (format = 'pdf') => {
     if (generatedTestCases.length === 0) {
       showNotification('No test cases to export', 'warning');
       return;
     }
 
     try {
-      // Simulate export process
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      setIsProcessing(true);
       
-      // Create export data
+      // Format data for export service
       const exportData = {
-        project: projectData,
-        testCases: generatedTestCases,
-        generatedAt: new Date(),
-        format: exportFormat
+        project: {
+          id: projectData.id || 'test-case-gen',
+          name: projectData.name || 'Generated Test Cases',
+          description: projectData.description || 'Test cases generated from requirements',
+          created_at: projectData.created || new Date().toISOString(),
+          last_updated: new Date().toISOString(),
+          total_test_cases: generatedTestCases.length,
+          model_explanation: 'Test cases generated using AI-powered analysis of requirement documents'
+        },
+        epics: [{
+          id: 'epic-1',
+          title: 'Main Epic',
+          description: 'Primary epic containing all generated test features',
+          model_explanation: 'Epic created to organize generated test cases hierarchically',
+          features: [{
+            id: 'feature-1',
+            title: 'Generated Features',
+            description: 'Features extracted from requirement analysis',
+            model_explanation: 'Features derived from requirement document analysis',
+            use_cases: [{
+              id: 'use-case-1',
+              title: 'Test Use Cases',
+              description: 'Use cases covering requirement functionality',
+              model_explanation: 'Use cases generated based on functional requirements',
+              test_cases: generatedTestCases.map((testCase, index) => ({
+                id: testCase.id || `tc-${index + 1}`,
+                title: testCase.title || testCase.name || `Test Case ${index + 1}`,
+                description: testCase.description || 'Generated test case',
+                test_steps: Array.isArray(testCase.steps) ? testCase.steps : [testCase.steps || 'Execute test'],
+                expected_result: testCase.expectedResult || testCase.expected || 'Test passes successfully',
+                test_data: testCase.testData || {},
+                priority: testCase.priority || 'Medium',
+                tags: testCase.tags || [],
+                model_explanation: testCase.model_explanation || 'Test case generated from requirement analysis'
+              }))
+            }]
+          }]
+        }]
       };
       
-      // Create downloadable content
-      const content = JSON.stringify(exportData, null, 2);
-      const blob = new Blob([content], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
+      // Use export service
+      const exportService = new ExportService();
+      await exportService.exportProject(exportData, format);
       
-      // Create download link
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${projectData.name}_test_cases.${exportFormat}`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-      
-      setExportDialog(false);
-      showNotification(`Test cases exported as ${exportFormat.toUpperCase()}`, 'success');
+      showNotification(`Test cases exported as ${format.toUpperCase()}`, 'success');
     } catch (error) {
       console.error('Export error:', error);
       showNotification('Failed to export test cases', 'error');
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -1370,6 +1430,82 @@ const TestCaseGeneration = () => {
                 {/* Step 4: Generate Test Cases */}
                 {index === 3 && (
                   <Box sx={{ py: 2 }}>
+                    {/* Test Generation Statistics */}
+                    {testGenerationStats && (
+                      <Card sx={{ mb: 2 }}>
+                        <CardContent>
+                          <Typography variant="h6" gutterBottom>
+                            Test Generation Summary
+                          </Typography>
+                          <Grid container spacing={2}>
+                            <Grid item xs={6} sm={3}>
+                              <Box sx={{ textAlign: 'center' }}>
+                                <Typography variant="h4" color="primary">
+                                  {testGenerationStats.epics_created}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                  Epics Created
+                                </Typography>
+                              </Box>
+                            </Grid>
+                            <Grid item xs={6} sm={3}>
+                              <Box sx={{ textAlign: 'center' }}>
+                                <Typography variant="h4" color="secondary">
+                                  {testGenerationStats.features_created}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                  Features Created
+                                </Typography>
+                              </Box>
+                            </Grid>
+                            <Grid item xs={6} sm={3}>
+                              <Box sx={{ textAlign: 'center' }}>
+                                <Typography variant="h4" color="success.main">
+                                  {testGenerationStats.use_cases_created}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                  Use Cases Created
+                                </Typography>
+                              </Box>
+                            </Grid>
+                            <Grid item xs={6} sm={3}>
+                              <Box sx={{ textAlign: 'center' }}>
+                                <Typography variant="h4" color="info.main">
+                                  {testGenerationStats.test_cases_created}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                  Test Cases Created
+                                </Typography>
+                              </Box>
+                            </Grid>
+                          </Grid>
+                          <Divider sx={{ my: 2 }} />
+                          <Grid container spacing={2}>
+                            <Grid item xs={12} sm={6}>
+                              <Stack direction="row" spacing={1} alignItems="center">
+                                <Chip 
+                                  label={testGenerationStats.stored_in_firestore ? "Stored in Firestore" : "Not Stored"} 
+                                  color={testGenerationStats.stored_in_firestore ? "success" : "error"}
+                                  size="small"
+                                />
+                                <Chip 
+                                  label={testGenerationStats.pushed_to_jira ? "Pushed to Jira" : "Not Pushed"} 
+                                  color={testGenerationStats.pushed_to_jira ? "success" : "warning"}
+                                  size="small"
+                                />
+                              </Stack>
+                            </Grid>
+                            <Grid item xs={12} sm={6}>
+                              <Typography variant="body2" color="text.secondary">
+                                Approved Items: {testGenerationStats.approved_items} | 
+                                Clarifications Needed: {testGenerationStats.clarifications_needed}
+                              </Typography>
+                            </Grid>
+                          </Grid>
+                        </CardContent>
+                      </Card>
+                    )}
+
                     <Card>
                       <CardContent>
                         <Typography variant="h6" gutterBottom>
@@ -1526,20 +1662,28 @@ const TestCaseGeneration = () => {
               onChange={(e) => setExportFormat(e.target.value)}
             >
               <MenuItem value="pdf">PDF Document</MenuItem>
-              <MenuItem value="excel">Excel Spreadsheet</MenuItem>
-              <MenuItem value="json">JSON Format</MenuItem>
-              <MenuItem value="csv">CSV Format</MenuItem>
+              <MenuItem value="word">Word Document</MenuItem>
+              <MenuItem value="xml">XML Format</MenuItem>
+              <MenuItem value="markdown">Markdown Format</MenuItem>
             </Select>
           </FormControl>
           
           <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
-            The export will include all generated test cases with detailed steps, expected results, and metadata.
+            The export will include all generated test cases with detailed steps, expected results, hierarchical structure, and AI model explanations.
           </Typography>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setExportDialog(false)}>Cancel</Button>
-          <Button onClick={handleExportTestCases} variant="contained" startIcon={<DownloadIcon />}>
-            Export
+          <Button 
+            onClick={() => {
+              handleExportTestCases(exportFormat);
+              setExportDialog(false);
+            }} 
+            variant="contained" 
+            startIcon={isProcessing ? <CircularProgress size={16} /> : <DownloadIcon />}
+            disabled={isProcessing}
+          >
+            {isProcessing ? 'Exporting...' : 'Export'}
           </Button>
         </DialogActions>
       </Dialog>
