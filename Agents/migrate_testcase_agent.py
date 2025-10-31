@@ -114,6 +114,5 @@ All final responses from MASTER_AGENT must be structured JSON:
   - enhance_testcase_agent
   - migrate_testcase_agent
 - Ensure all responses adhere to GDPR and healthcare compliance constraints.
-""",
-    tools=[test_generator_agent_tool],
+"""
 )

@@ -1,4 +1,5 @@
-﻿from google.adk.runners import Runner
+﻿import uuid
+from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.adk.memory import InMemoryMemoryService
 from google.genai.types import Content, Part
@@ -58,7 +59,12 @@ async def call_agent_async(query, isnewproject: bool):
     print(f"Prompt (first 100 chars): {query[:100]}...")
 
     # Only setup new session and runner if it's a new project or if they don't exist
-    if isnewproject or global_session is None or global_runner is None:
+    if (
+    isnewproject
+    or global_session is None
+    or global_runner is None
+    or getattr(global_session, "is_closed", lambda: False)()
+    ):
         print(f"Creating new session and runner (isnewproject: {isnewproject})")
         global_session, global_runner = await setup_session_and_runner()
         print("DEBUG: New session and runner created successfully")
@@ -66,7 +72,15 @@ async def call_agent_async(query, isnewproject: bool):
         print("Reusing existing session and runner")
 
     print("DEBUG: About to call global_runner.run_async()")
-    events = global_runner.run_async(user_id=USER_ID, session_id=SESSION_ID, new_message=content)
+    try:
+        events = global_runner.run_async(user_id=USER_ID, session_id=SESSION_ID, new_message=content)
+    except Exception as e:
+        if "Session terminated" in str(e):
+            print("⚠️ MCP session terminated — reinitializing...")
+            global_session, global_runner = await setup_session_and_runner()
+            events = global_runner.run_async(user_id=USER_ID, session_id=SESSION_ID, new_message=content)
+        else:
+            raise
     print("DEBUG: global_runner.run_async() returned events generator")
 
     final_response_content = "Final response not yet received."
@@ -99,15 +113,15 @@ async def call_agent_async(query, isnewproject: bool):
     print("## Final Message")
     print(final_response_content)
 
-    print("DEBUG: About to get session and add to memory")
-    # Get the memory service from the runner to add session to memory
-    completed_session = await global_runner.session_service.get_session(app_name=APP_NAME, user_id=USER_ID, session_id=SESSION_ID)
-    
-    await global_runner.memory_service.add_session_to_memory(completed_session) #type: ignore
-    print("DEBUG: Session added to memory successfully")
+    try:
+        completed_session = await global_runner.session_service.get_session(app_name=APP_NAME, user_id=USER_ID, session_id=SESSION_ID)
+        await global_runner.memory_service.add_session_to_memory(completed_session) #type: ignore
+        print("DEBUG: Session added to memory successfully")
+    except Exception as e:
+        print(f"⚠️ Skipped adding to memory: {e}")
 
     return final_response_content, "\n".join(debug_events)
-
+    
 # FastAPI endpoints
 @app.post("/query", response_model=QueryResponse)
 async def process_query(request: QueryRequest,isnewproject: bool = False):
@@ -122,9 +136,18 @@ async def process_query(request: QueryRequest,isnewproject: bool = False):
         print(f"DEBUG: Response length: {len(response) if response else 0}")
         return QueryResponse(response=response, debug_info=debug_info) #type:ignore
     except Exception as e:
+        import traceback
         print(f"DEBUG: Exception in process_query: {str(e)}")
         print(f"DEBUG: Exception type: {type(e)}")
-        return QueryResponse(response=f"Error processing query: {str(e)}", debug_info="")    
+        print(f"DEBUG: Exception args: {e.args}")
+        print(f"DEBUG: Request query length: {len(request.query) if request.query else 0}")
+        print(f"DEBUG: isnewproject parameter: {isnewproject}")
+        print(f"DEBUG: Global session exists: {global_session is not None}")
+        print(f"DEBUG: Global runner exists: {global_runner is not None}")
+        print(f"DEBUG: Full traceback:")
+        print(traceback.format_exc())
+        print("DEBUG: End of exception details")
+        return QueryResponse(response=f"Error processing query: {str(e)}", debug_info=f"Exception type: {type(e).__name__}")    
 
 
 @app.get("/")
@@ -144,6 +167,20 @@ async def reset_session_endpoint():
     await reset_session()
     print("DEBUG: Reset session endpoint completed")
     return {"message": "Session reset successfully", "status": "success"}
+
+@app.on_event("startup")
+async def startup_event():
+    global global_session, global_runner
+    print("🚀 Initializing persistent MCP session and runner...")
+    global_session, global_runner = await setup_session_and_runner()
+    print("✅ Persistent session and runner ready.")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    global global_session
+    if global_session:
+        await global_session.close()
+        print("🛑 MCP session closed.")
 
 # Run the query (for testing when running directly)
 if __name__ == "__main__":

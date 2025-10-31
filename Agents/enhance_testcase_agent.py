@@ -27,6 +27,5 @@ test_generator_agent_tool = agent_tool.AgentTool(agent=test_generator_agent)
 enhance_testcase_agent = Agent(
     name="enhance_testcase_agent",
     model="gemini-2.5-flash",
-    instruction="You are a helpful AI assistant designed to provide accurate and useful information.",
-    tools=[test_generator_agent_tool],
+    instruction="You are a helpful AI assistant designed to provide accurate and useful information."    
 )

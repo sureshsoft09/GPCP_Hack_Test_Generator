@@ -4,7 +4,8 @@ from pathlib import Path
 import google.auth
 from dotenv import load_dotenv
 from google.adk.agents import Agent,SequentialAgent
-from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StreamableHTTPConnectionParams
+from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.cloud import logging as google_cloud_logging
 
 # Load environment variables from .env file in root directory
@@ -582,30 +583,8 @@ Ready for integration upon resolution of pending clarifications."
 """,
 )
 
-integration_agent = Agent(
-    name="integration_agent",
-    model="gemini-2.5-flash",
-    instruction="""
-    There is a MCP tool JIRA MCP tool which have few toosl for creating issues in JIRA
-    
-    Use JIRA MCP to Create Issues:   
-    - Pass the issue type as `EPIC` for the main requirement.   
-    - Pass the issue type as `New Feature` for each derived feature.
-    - Pass the issue type as `Improvement` for each use cases.   
-    - Pass the issue type as `Task` for each test case if required.
-    - Ensure each feature is linked to the EPIC. Example Output Format:EPICIssue Type: EPIC Summary: [Epic Summary] Description: [Epic Description]FeaturesIssue Type: New Feature Summary: [Feature 1 Summary] Description: [Feature 1 Description] Issue Type: New Feature Summary: [Feature 2 Summary] Description: [Feature 2 Description]
-
-    Get the inputs from above agnet or from the user directly the epics and test cases then create JIRA issues using the JIRA MCP tool.
-""",
-    tools=[JiraMCP_Tool]
-)
-
 test_generator_agent = SequentialAgent(
     name="test_generator_agent",
-    sub_agents=[planner_agent, compliance_agent, test_engineer_agent, reviewer_agent,integration_agent],
-    description="Coordinates the complete test case generation lifecycle — from planning and compliance validation to test creation, review, and system integration. The integration_agent connects outputs seamlessly with Jira and Firestore for tracking and storage.",    
+    sub_agents=[planner_agent, compliance_agent, test_engineer_agent, reviewer_agent],
+    description="Coordinates the complete test case generation lifecycle — from planning and compliance validation to test creation, review",    
 )
-
-
-
-

@@ -148,7 +148,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     asyncio.run(
         mcp.run_async(
-            transport="http",
+            transport="streamable-http",
             host="0.0.0.0",
             port=port,
         )
