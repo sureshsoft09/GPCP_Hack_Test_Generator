@@ -272,5 +272,5 @@ FINAL RULES
                 enhance_testcase_agent,
                 migrate_testcase_agent
     ],
-    tools=[FireStoreMCP_Tool]  
+    tools=[FireStoreMCP_Tool,JiraMCP_Tool]  
 )
