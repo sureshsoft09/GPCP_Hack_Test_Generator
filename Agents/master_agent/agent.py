@@ -30,8 +30,14 @@ os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "medassureaiproject")
 os.environ.setdefault("GOOGLE_CLOUD_LOCATION", "global")
 os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "True")
 
-JIRA_MCP_URL = os.getenv('JIRA_MCP_URL', 'http://localhost:8085')
+JIRA_MCP_URL = os.getenv('JIRA_MCP_URL', 'http://localhost:8085/mcp')
+FIRESTORE_MCP_URL= os.getenv('FIRESTORE_MCP_URL', 'http://localhost:8084/mcp')
 
+FireStoreMCP_Tool = MCPToolset(
+                                connection_params=StreamableHTTPConnectionParams(
+                                    url=FIRESTORE_MCP_URL,
+                                ),
+                              )
 JiraMCP_Tool = MCPToolset(
                               connection_params=StreamableHTTPConnectionParams(
                                   url=JIRA_MCP_URL,
@@ -39,7 +45,7 @@ JiraMCP_Tool = MCPToolset(
                             )
 
 logging_client = google_cloud_logging.Client()
-logger = logging_client.logger("weather-agent")
+logger = logging_client.logger("master-agent")
 
 requirement_reviewer_agent_tool = agent_tool.AgentTool(agent=requirement_reviewer_agent)    
 test_generator_agent_tool = agent_tool.AgentTool(agent=test_generator_agent)
@@ -266,5 +272,5 @@ FINAL RULES
                 enhance_testcase_agent,
                 migrate_testcase_agent
     ],
-    tools=[JiraMCP_Tool]  
+    tools=[FireStoreMCP_Tool]  
 )
