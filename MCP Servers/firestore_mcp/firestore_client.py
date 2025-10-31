@@ -6,19 +6,23 @@ epics, features, use cases, and test cases in Google Cloud Firestore.
 """
 
 import logging
+import os
 from datetime import datetime
 from typing import List, Optional, Dict, Any, Union
 from uuid import uuid4
 
 from google.cloud import firestore
 from google.api_core.exceptions import NotFound, AlreadyExists
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 from models import (
     Project, Epic, Feature, UseCase, TestCase,
     ProjectSummary, CreateProjectRequest, UpdateProjectRequest,
     SearchFilter, BulkOperationResult, JiraStatus, ProjectStatus
 )
-from config import config
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +33,10 @@ class FirestoreClient:
     def __init__(self):
         """Initialize Firestore client"""
         self.client = firestore.Client(
-            project=config.project_id,
-            database=config.firestore_database
+            project=os.getenv("GOOGLE_CLOUD_PROJECT", "medassureaiproject"),
+            database=os.getenv("FIRESTORE_DATABASE_Name", "medassureaifirestoredb")
         )
-        self.projects_collection = config.projects_collection
+        self.projects_collection = os.getenv("PROJECTS_COLLECTION", "testcase_projects")
         
     def _generate_id(self, prefix: str = "") -> str:
         """Generate unique ID with optional prefix"""
@@ -42,6 +46,22 @@ class FirestoreClient:
         """Update timestamps in data"""
         data['updated_at'] = datetime.utcnow()
         return data
+    
+    def _safe_get_project_data(self, project_id: str) -> Optional[Dict[str, Any]]:
+        """Safely get project data from Firestore"""
+        try:
+            doc_ref = self.client.collection(self.projects_collection).document(project_id)
+            doc = doc_ref.get()
+            
+            if not doc.exists:
+                return None
+            
+            project_data = doc.to_dict()
+            return project_data if project_data else None
+            
+        except Exception as e:
+            logger.error(f"Error getting project data for {project_id}: {e}")
+            return None
     
     def _create_project_from_dict(self, data: Optional[Dict[str, Any]], project_id: Optional[str] = None) -> Optional[Project]:
         """Create Project instance from Firestore dictionary data"""
@@ -61,11 +81,55 @@ class FirestoreClient:
         
         return Project(**data)
     
+    def get_current_timestamp(self):
+        """Get current timestamp"""
+        return datetime.utcnow()
+    
+    def update_project_simple(self, project_id: str, updates: Dict[str, Any]) -> bool:
+        """Update project with dictionary data"""
+        try:
+            doc_ref = self.client.collection(self.projects_collection).document(project_id)
+            doc = doc_ref.get()
+            
+            if not doc.exists:
+                logger.warning(f"Project {project_id} not found for update")
+                return False
+            
+            # Update the document
+            doc_ref.update(updates)
+            logger.info(f"Updated project: {project_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error updating project {project_id}: {e}")
+            return False
+    
     # ================================
     # PROJECT OPERATIONS
     # ================================
     
-    async def create_project(self, request: CreateProjectRequest, created_by: Optional[str] = None) -> Project:
+    def create_project(self, project_data: Dict[str, Any]) -> str:
+        """Create a new project from dictionary data"""
+        try:
+            project_id = self._generate_id("PROJ_")
+            
+            # Add metadata
+            project_data["project_id"] = project_id
+            project_data["created_at"] = datetime.utcnow()
+            project_data["updated_at"] = datetime.utcnow()
+            
+            # Store in Firestore
+            doc_ref = self.client.collection(self.projects_collection).document(project_id)
+            doc_ref.set(project_data)
+            
+            logger.info(f"Created project: {project_id}")
+            return project_id
+            
+        except Exception as e:
+            logger.error(f"Error creating project: {e}")
+            raise
+    
+    async def create_project_async(self, request: CreateProjectRequest, created_by: Optional[str] = None) -> Project:
         """Create a new project"""
         try:
             project_id = self._generate_id("PROJ_")
@@ -106,6 +170,70 @@ class FirestoreClient:
             
         except Exception as e:
             logger.error(f"Error getting project {project_id}: {e}")
+            raise
+    
+    def get_all_projects(self) -> List[Dict[str, Any]]:
+        """Get all projects from Firestore"""
+        try:
+            docs = self.client.collection(self.projects_collection).stream()
+            projects = []
+            
+            for doc in docs:
+                project_data = doc.to_dict()
+                project_data['project_id'] = doc.id
+                projects.append(project_data)
+            
+            logger.info(f"Retrieved {len(projects)} projects")
+            return projects
+            
+        except Exception as e:
+            logger.error(f"Error getting all projects: {e}")
+            raise
+    
+    def search_projects(self, query: str = "", filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Search projects with text query and filters"""
+        try:
+            collection_ref = self.client.collection(self.projects_collection)
+            
+            # Start with all projects
+            query_ref = collection_ref
+            
+            # Apply filters if provided
+            if filters:
+                for field, value in filters.items():
+                    if value:  # Only apply non-empty filters
+                        if field == "compliance_frameworks":
+                            # Search in array field
+                            query_ref = query_ref.where(field, "array_contains", value)
+                        else:
+                            # Exact match for other fields
+                            query_ref = query_ref.where(field, "==", value)
+            
+            # Execute query
+            docs = query_ref.stream()
+            projects = []
+            
+            for doc in docs:
+                project_data = doc.to_dict()
+                project_data['project_id'] = doc.id
+                
+                # Apply text search if query provided
+                if query:
+                    # Search in project_name and description
+                    project_name = project_data.get('project_name', '').lower()
+                    description = project_data.get('description', '').lower()
+                    search_query = query.lower()
+                    
+                    if search_query in project_name or search_query in description:
+                        projects.append(project_data)
+                else:
+                    projects.append(project_data)
+            
+            logger.info(f"Search returned {len(projects)} projects")
+            return projects
+            
+        except Exception as e:
+            logger.error(f"Error searching projects: {e}")
             raise
     
     async def update_project(self, project_id: str, request: UpdateProjectRequest, updated_by: Optional[str] = None) -> Optional[Project]:
@@ -229,7 +357,59 @@ class FirestoreClient:
     # EPIC OPERATIONS
     # ================================
     
-    async def add_epic_to_project(self, project_id: str, epic: Epic) -> bool:
+    def get_project_epics(self, project_id: str) -> List[Dict[str, Any]]:
+        """Get all epics for a project"""
+        try:
+            project_data = self._safe_get_project_data(project_id)
+            if not project_data:
+                return []
+                
+            epics = project_data.get('epics', [])
+            
+            logger.info(f"Retrieved {len(epics)} epics for project {project_id}")
+            return epics
+            
+        except Exception as e:
+            logger.error(f"Error getting epics for project {project_id}: {e}")
+            return []
+    
+    def add_epic_to_project(self, project_id: str, epic_data: Dict[str, Any]) -> str:
+        """Add an epic to a project (simple version)"""
+        try:
+            doc_ref = self.client.collection(self.projects_collection).document(project_id)
+            doc = doc_ref.get()
+            
+            if not doc.exists:
+                raise ValueError(f"Project {project_id} not found")
+            
+            project_data = doc.to_dict()
+            if not project_data:
+                raise ValueError(f"Project {project_id} has no data")
+                
+            epics = project_data.get('epics', [])
+            
+            # Generate epic ID if not provided
+            if not epic_data.get('epic_id'):
+                epic_data['epic_id'] = self._generate_id("EPIC_")
+            
+            # Add timestamps
+            epic_data['created_at'] = datetime.utcnow()
+            epic_data['updated_at'] = datetime.utcnow()
+            
+            # Add epic to list
+            epics.append(epic_data)
+            
+            # Update project with new epic
+            doc_ref.update({'epics': epics, 'updated_at': datetime.utcnow()})
+            
+            logger.info(f"Added epic {epic_data['epic_id']} to project {project_id}")
+            return epic_data['epic_id']
+            
+        except Exception as e:
+            logger.error(f"Error adding epic to project {project_id}: {e}")
+            raise
+    
+    async def add_epic_to_project_async(self, project_id: str, epic: Epic) -> bool:
         """Add an epic to a project"""
         try:
             doc_ref = self.client.collection(self.projects_collection).document(project_id)
@@ -370,7 +550,79 @@ class FirestoreClient:
     # FEATURE OPERATIONS
     # ================================
     
-    async def add_feature_to_epic(self, project_id: str, epic_id: str, feature: Feature) -> bool:
+    def get_epic_features(self, project_id: str, epic_id: str) -> List[Dict[str, Any]]:
+        """Get all features for an epic"""
+        try:
+            project_data = self._safe_get_project_data(project_id)
+            if not project_data:
+                return []
+            
+            epics = project_data.get('epics', [])
+            
+            # Find the epic
+            for epic in epics:
+                if epic.get('epic_id') == epic_id:
+                    features = epic.get('features', [])
+                    logger.info(f"Retrieved {len(features)} features for epic {epic_id}")
+                    return features
+            
+            logger.warning(f"Epic {epic_id} not found in project {project_id}")
+            return []
+            
+        except Exception as e:
+            logger.error(f"Error getting features for epic {epic_id}: {e}")
+            return []
+    
+    def add_feature_to_epic(self, project_id: str, epic_id: str, feature_data: Dict[str, Any]) -> str:
+        """Add a feature to an epic (simple version)"""
+        try:
+            doc_ref = self.client.collection(self.projects_collection).document(project_id)
+            doc = doc_ref.get()
+            
+            if not doc.exists:
+                raise ValueError(f"Project {project_id} not found")
+            
+            project_data = doc.to_dict()
+            if not project_data:
+                raise ValueError(f"Project {project_id} has no data")
+                
+            epics = project_data.get('epics', [])
+            
+            # Find and update the epic
+            epic_found = False
+            for epic in epics:
+                if epic.get('epic_id') == epic_id:
+                    epic_found = True
+                    features = epic.get('features', [])
+                    
+                    # Generate feature ID if not provided
+                    if not feature_data.get('feature_id'):
+                        feature_data['feature_id'] = self._generate_id("FEAT_")
+                    
+                    # Add timestamps
+                    feature_data['created_at'] = datetime.utcnow()
+                    feature_data['updated_at'] = datetime.utcnow()
+                    
+                    # Add feature to epic
+                    features.append(feature_data)
+                    epic['features'] = features
+                    epic['updated_at'] = datetime.utcnow()
+                    break
+            
+            if not epic_found:
+                raise ValueError(f"Epic {epic_id} not found in project {project_id}")
+            
+            # Update project with modified epics
+            doc_ref.update({'epics': epics, 'updated_at': datetime.utcnow()})
+            
+            logger.info(f"Added feature {feature_data['feature_id']} to epic {epic_id}")
+            return feature_data['feature_id']
+            
+        except Exception as e:
+            logger.error(f"Error adding feature to epic {epic_id}: {e}")
+            raise
+    
+    async def add_feature_to_epic_async(self, project_id: str, epic_id: str, feature: Feature) -> bool:
         """Add a feature to an epic"""
         try:
             doc_ref = self.client.collection(self.projects_collection).document(project_id)
@@ -410,7 +662,95 @@ class FirestoreClient:
     # USE CASE OPERATIONS
     # ================================
     
-    async def add_use_case_to_feature(self, project_id: str, epic_id: str, feature_id: str, use_case: UseCase) -> bool:
+    def get_feature_use_cases(self, project_id: str, epic_id: str, feature_id: str) -> List[Dict[str, Any]]:
+        """Get all use cases for a feature"""
+        try:
+            project_data = self._safe_get_project_data(project_id)
+            if not project_data:
+                return []
+            
+            epics = project_data.get('epics', [])
+            
+            # Find the epic and feature
+            for epic in epics:
+                if epic.get('epic_id') == epic_id:
+                    features = epic.get('features', [])
+                    for feature in features:
+                        if feature.get('feature_id') == feature_id:
+                            use_cases = feature.get('use_cases', [])
+                            logger.info(f"Retrieved {len(use_cases)} use cases for feature {feature_id}")
+                            return use_cases
+            
+            logger.warning(f"Feature {feature_id} not found in epic {epic_id}, project {project_id}")
+            return []
+            
+        except Exception as e:
+            logger.error(f"Error getting use cases for feature {feature_id}: {e}")
+            return []
+    
+    def add_use_case_to_feature(self, project_id: str, epic_id: str, feature_id: str, use_case_data: Dict[str, Any]) -> str:
+        """Add a use case to a feature (simple version)"""
+        try:
+            doc_ref = self.client.collection(self.projects_collection).document(project_id)
+            doc = doc_ref.get()
+            
+            if not doc.exists:
+                raise ValueError(f"Project {project_id} not found")
+            
+            project_data = doc.to_dict()
+            if not project_data:
+                raise ValueError(f"Project {project_id} has no data")
+                
+            epics = project_data.get('epics', [])
+            
+            # Find and update the epic and feature
+            epic_found = False
+            feature_found = False
+            
+            for epic in epics:
+                if epic.get('epic_id') == epic_id:
+                    epic_found = True
+                    features = epic.get('features', [])
+                    
+                    for feature in features:
+                        if feature.get('feature_id') == feature_id:
+                            feature_found = True
+                            use_cases = feature.get('use_cases', [])
+                            
+                            # Generate use case ID if not provided
+                            if not use_case_data.get('use_case_id'):
+                                use_case_data['use_case_id'] = self._generate_id("UC_")
+                            
+                            # Add timestamps
+                            use_case_data['created_at'] = datetime.utcnow()
+                            use_case_data['updated_at'] = datetime.utcnow()
+                            
+                            # Add use case to feature
+                            use_cases.append(use_case_data)
+                            feature['use_cases'] = use_cases
+                            feature['updated_at'] = datetime.utcnow()
+                            break
+                    
+                    if feature_found:
+                        epic['updated_at'] = datetime.utcnow()
+                        break
+            
+            if not epic_found:
+                raise ValueError(f"Epic {epic_id} not found in project {project_id}")
+            if not feature_found:
+                raise ValueError(f"Feature {feature_id} not found in epic {epic_id}")
+            
+            # Update project with modified epics
+            doc_ref.update({'epics': epics, 'updated_at': datetime.utcnow()})
+            
+            logger.info(f"Added use case {use_case_data['use_case_id']} to feature {feature_id}")
+            return use_case_data['use_case_id']
+            
+        except Exception as e:
+            logger.error(f"Error adding use case to feature {feature_id}: {e}")
+            raise
+    
+    async def add_use_case_to_feature_async(self, project_id: str, epic_id: str, feature_id: str, use_case: UseCase) -> bool:
         """Add a use case to a feature"""
         try:
             doc_ref = self.client.collection(self.projects_collection).document(project_id)
@@ -454,7 +794,87 @@ class FirestoreClient:
     # TEST CASE OPERATIONS
     # ================================
     
-    async def add_test_case_to_use_case(self, project_id: str, epic_id: str, feature_id: str, use_case_id: str, test_case: TestCase) -> bool:
+    def add_test_case_to_use_case(self, project_id: str, epic_id: str, feature_id: str, use_case_id: str, 
+                                 test_case_title: str, test_steps: List[str], expected_result: str, 
+                                 test_type: str = "Functional") -> str:
+        """Add a test case to a use case (simple version)"""
+        try:
+            doc_ref = self.client.collection(self.projects_collection).document(project_id)
+            doc = doc_ref.get()
+            
+            if not doc.exists:
+                raise ValueError(f"Project {project_id} not found")
+            
+            project_data = doc.to_dict()
+            if not project_data:
+                raise ValueError(f"Project {project_id} has no data")
+                
+            epics = project_data.get('epics', [])
+            
+            # Find the epic, feature, and use case
+            epic_found = False
+            feature_found = False
+            use_case_found = False
+            
+            for epic in epics:
+                if epic.get('epic_id') == epic_id:
+                    epic_found = True
+                    features = epic.get('features', [])
+                    
+                    for feature in features:
+                        if feature.get('feature_id') == feature_id:
+                            feature_found = True
+                            use_cases = feature.get('use_cases', [])
+                            
+                            for use_case in use_cases:
+                                if use_case.get('use_case_id') == use_case_id:
+                                    use_case_found = True
+                                    test_cases = use_case.get('test_cases', [])
+                                    
+                                    # Create test case data
+                                    test_case_data = {
+                                        'test_case_id': self._generate_id("TC_"),
+                                        'test_case_title': test_case_title,
+                                        'test_steps': test_steps,
+                                        'expected_result': expected_result,
+                                        'test_type': test_type,
+                                        'created_at': datetime.utcnow(),
+                                        'updated_at': datetime.utcnow()
+                                    }
+                                    
+                                    # Add test case to use case
+                                    test_cases.append(test_case_data)
+                                    use_case['test_cases'] = test_cases
+                                    use_case['updated_at'] = datetime.utcnow()
+                                    break
+                            
+                            if use_case_found:
+                                feature['updated_at'] = datetime.utcnow()
+                                break
+                    
+                    if feature_found:
+                        epic['updated_at'] = datetime.utcnow()
+                        break
+            
+            if not epic_found:
+                raise ValueError(f"Epic {epic_id} not found in project {project_id}")
+            if not feature_found:
+                raise ValueError(f"Feature {feature_id} not found in epic {epic_id}")
+            if not use_case_found:
+                raise ValueError(f"Use case {use_case_id} not found in feature {feature_id}")
+            
+            # Update project with modified epics
+            doc_ref.update({'epics': epics, 'updated_at': datetime.utcnow()})
+            
+            test_case_id = test_case_data['test_case_id']
+            logger.info(f"Added test case {test_case_id} to use case {use_case_id}")
+            return test_case_id
+            
+        except Exception as e:
+            logger.error(f"Error adding test case to use case {use_case_id}: {e}")
+            raise
+    
+    async def add_test_case_to_use_case_async(self, project_id: str, epic_id: str, feature_id: str, use_case_id: str, test_case: TestCase) -> bool:
         """Add a test case to a use case"""
         try:
             doc_ref = self.client.collection(self.projects_collection).document(project_id)
@@ -517,7 +937,7 @@ class FirestoreClient:
                 for epic_data in structure_data['epics']:
                     try:
                         epic = Epic(**epic_data)
-                        success = await self.add_epic_to_project(project_id, epic)
+                        success = await self.add_epic_to_project_async(project_id, epic)
                         if success:
                             result.success_count += 1
                             result.processed_ids.append(epic.epic_id)
@@ -580,7 +1000,51 @@ class FirestoreClient:
             logger.error(f"Error searching test cases: {e}")
             raise
     
-    async def get_project_statistics(self, project_id: str) -> Dict[str, Any]:
+    def get_project_statistics(self) -> Dict[str, Any]:
+        """Get overall statistics for all projects (simple version)"""
+        try:
+            docs = self.client.collection(self.projects_collection).stream()
+            
+            total_projects = 0
+            total_epics = 0
+            total_features = 0
+            total_use_cases = 0
+            total_test_cases = 0
+            
+            for doc in docs:
+                total_projects += 1
+                project_data = doc.to_dict()
+                epics = project_data.get('epics', [])
+                
+                for epic in epics:
+                    total_epics += 1
+                    features = epic.get('features', [])
+                    
+                    for feature in features:
+                        total_features += 1
+                        use_cases = feature.get('use_cases', [])
+                        
+                        for use_case in use_cases:
+                            total_use_cases += 1
+                            test_cases = use_case.get('test_cases', [])
+                            total_test_cases += len(test_cases)
+            
+            stats = {
+                'total_projects': total_projects,
+                'total_epics': total_epics,
+                'total_features': total_features,
+                'total_use_cases': total_use_cases,
+                'total_test_cases': total_test_cases
+            }
+            
+            logger.info(f"Generated overall statistics: {stats}")
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Error getting project statistics: {e}")
+            return {}
+    
+    async def get_project_statistics_async(self, project_id: str) -> Dict[str, Any]:
         """Get detailed statistics for a project"""
         try:
             project = await self.get_project(project_id)
