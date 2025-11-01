@@ -14,6 +14,9 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Dialogflow Messenger -->
+    <link rel="stylesheet" href="https://www.gstatic.com/dialogflow-console/fast/df-messenger/prod/v1/themes/df-messenger-default.css">
+    <script src="https://www.gstatic.com/dialogflow-console/fast/df-messenger/prod/v1/df-messenger.js"></script>
     <title>MedAssureAI - Healthcare Test Management</title>
     <style>
       body {
@@ -21,6 +24,19 @@
         margin: 0;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         min-height: 100vh;
+      }
+      
+      /* Dialogflow Messenger Styles */
+      df-messenger {
+        z-index: 999 !important;
+        position: fixed !important;
+        --df-messenger-font-color: #000;
+        --df-messenger-font-family: 'Inter', Google Sans;
+        --df-messenger-chat-background: #f3f6fc;
+        --df-messenger-message-user-background: #d3e3fd;
+        --df-messenger-message-bot-background: #fff;
+        bottom: 16px !important;
+        right: 16px !important;
       }
     </style>
   </head>
