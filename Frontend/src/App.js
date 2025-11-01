@@ -9,7 +9,7 @@ import Layout from './components/layout/Layout';
 // Page Components
 import Dashboard from './pages/Dashboard';
 import TestCaseGeneration from './pages/TestCaseGeneration';
-import EnhanceTestCases from './pages/EnhanceTestCases';
+import EnhanceTestCase from './pages/EnhanceTestCase';
 import MigrationTestCases from './pages/MigrationTestCases';
 import AnalyticsReport from './pages/AnalyticsReport';
 
@@ -112,7 +112,7 @@ function App() {
               <Route path="/" element={<Dashboard />} />
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/generate" element={<TestCaseGeneration />} />
-              <Route path="/enhance" element={<EnhanceTestCases />} />
+              <Route path="/enhance" element={<EnhanceTestCase />} />
               <Route path="/migrate" element={<MigrationTestCases />} />
               <Route path="/analytics" element={<AnalyticsReport />} />
             </Routes>
