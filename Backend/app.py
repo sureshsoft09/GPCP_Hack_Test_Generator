@@ -214,6 +214,8 @@ async def review_requirement_specifications(req: ReviewRequest):
     prompt = f"""
 Please review and analyze the following requirement specifications for project '{req.project_name}':
 
+pass this to requirement_reviewer_agent not any other tools.
+
 EXTRACTED CONTENT:
 {extracted_content}
 
@@ -228,12 +230,33 @@ EXTRACTED CONTENT:
 async def generate_test_cases(req: PromptRequest):
     """Generate test cases using the previously reviewed and approved requirement details."""
     prompt = f"""
-    Generate test cases using the validated requirement details stored in memory.
-    Use the outputs from the requirement_reviewer_agent as the approved source.
-    Route this request through the test_generator_agent to create epics, features, use cases, and test cases.
+    Generate complete test cases using the previously validated and approved requirement details available in memory. 
+    Follow the standard MedAssureAI process and use the connected sub-agents (test_generator_agent) 
+    to ensure compliance, traceability, and completeness.
+
+    Once the epics, features, use cases, and test cases are generated:
+    1. Push all generated data into Firestore using the connected Firestore MCP tool.
+    2. Push all details into Jira using the connected Jira MCP tool and update jira sync status into Firestore.
+    3. Wait for confirmation from both MCP tools before returning control.
+    4. Return the full structured JSON result in the expected output format.
+
     User instruction: {req.prompt}
     """
-    return await call_agents_api(prompt)
+    response = await call_agents_api(prompt)
+
+    print("DEBUG: Received response from agent")
+    print(f"Response (first 1000 chars): {response.response[:1000]}...")
+
+    prompt_pushdata = f"""
+ Push the generated test cases and related artifacts into Firestore and Jira via MCP through maste_agent
+ Ensure all data is stored correctly and update the sync status in Firestore.
+    """
+    response_FirestoreJira_status = await call_agents_api(prompt_pushdata)
+
+    print("DEBUG: Received response from agent after pushing data to Firestore and Jira")
+    print(f"Response (first 1000 chars): {response_FirestoreJira_status.response[:1000]}...")
+
+    return response_FirestoreJira_status
 
 
 @app.post("/enhance_test_cases", response_model=AgentResponse)
@@ -261,7 +284,7 @@ async def req_clarification_chat_with_agent(req: PromptRequest):
     prompt = f"""
     This is a clarification continuation request from the user for requirement review.
     The user has provided additional information or confirmation regarding previously
-    identified ambiguous or missing requirements.
+    identified ambiguous or missing requirements. It should be forwarded to the requirement_reviewer_agent not to any other tools. 
 
     Context:
     - Type: Clarification Interaction

@@ -117,8 +117,8 @@ You also handle multi-turn clarification loops with the user to resolve ambiguit
 ### AFTER USER RESPONSES (CLARIFICATION LOOP)
 1. If user replies with clarification:
    - Update respective item’s `status` to “resolved”.
-2. If user says “use as final” or similar:
-   - Update item’s `status` to “user_confirmed”.
+2. If user says “use current requirement as final” or similar:
+   - Update item’s `status` to “user_confirmed” and mark status to ready for test generation.
 3. Once all items are resolved or confirmed:
    - Return readiness plan and mark as ready for test generation.
 
