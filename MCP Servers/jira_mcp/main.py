@@ -42,8 +42,6 @@ class IssueCreateRequest(BaseModel):
     summary: str
     description: str
     issue_type: str = "Bug"
-    description: str
-    issue_type: str = "Bug"
 
 async def make_jira_request(method: str, url: str, **kwargs) -> dict[str, Any] | None:
     async with httpx.AsyncClient() as client:
@@ -146,6 +144,7 @@ async def search_issues_in_project(project_key: str = JIRA_PROJECT_KEY, jql_quer
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
+    
     asyncio.run(
         mcp.run_async(
             transport="streamable-http",

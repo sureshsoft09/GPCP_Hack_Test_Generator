@@ -15,10 +15,29 @@ class UploadAndExtractService:
         # Load environment variables
         self.google_cloud_bucket = os.getenv("GOOGLE_CLOUD_BUCKET", "medassure-ai-documents")
         self.max_file_size = int(os.getenv("MAX_FILE_SIZE", "52428800"))  # 50MB default
-        self.allowed_file_types = os.getenv(
+        
+        # Handle both MIME types and simplified extensions
+        allowed_file_types_env = os.getenv(
             "ALLOWED_FILE_TYPES", 
             "application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        ).split(",")
+        )
+        
+        # Map simplified extensions to MIME types for backward compatibility
+        extension_to_mime = {
+            "pdf": "application/pdf",
+            "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        }
+        
+        self.allowed_file_types = []
+        for file_type in allowed_file_types_env.split(","):
+            file_type = file_type.strip()
+            if file_type in extension_to_mime:
+                # If it's a simplified extension, convert to MIME type
+                self.allowed_file_types.append(extension_to_mime[file_type])
+            else:
+                # If it's already a MIME type, keep as is
+                self.allowed_file_types.append(file_type)
+        
         self.max_text_length = int(os.getenv("MAX_TEXT_LENGTH", "1048576"))  # 1MB default
         self.debug = os.getenv("DEBUG", "true").lower() == "true"
         

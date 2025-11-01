@@ -413,6 +413,7 @@ async def get_project_statistics() -> Dict[str, Any]:
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
+    
     asyncio.run(
         mcp.run_async(
             transport="streamable-http",

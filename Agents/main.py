@@ -194,5 +194,7 @@ if __name__ == "__main__":
     # print(f"Response: {response}")
     
     # Start FastAPI server
-    print("DEBUG: About to start FastAPI server on port 8082")
-    uvicorn.run(app, host="0.0.0.0", port=8082)
+    import os
+    port = int(os.getenv("PORT", 8082))
+    print(f"DEBUG: About to start FastAPI server on port {port}")
+    uvicorn.run(app, host="0.0.0.0", port=port)
