@@ -676,10 +676,12 @@ Your role encompasses planning, compliance validation, test case generation, and
     {
       "epic_id": "E001",
       "epic_name": "User Authentication & Access Control",
+      "description": "Handles user login, authentication, and access management functionalities.",
       "features": [
         {
           "feature_id": "F001",
           "feature_name": "Login Validation",
+          "description": "Handles user login processes including credential validation and session management.",
           "use_cases": [
             {
               "use_case_id": "UC001",
@@ -696,6 +698,7 @@ Your role encompasses planning, compliance validation, test case generation, and
               "test_cases": [
                 {
                   "test_case_id": "TC001",
+                  "test_case_title": "Valid User Login",
                   "preconditions": ["User exists in system", "Credentials are valid"],
                   "test_steps": [
                     "Navigate to login page",
@@ -716,6 +719,7 @@ Your role encompasses planning, compliance validation, test case generation, and
                 },
                 {
                   "test_case_id": "TC002",
+                  "test_case_title": "Invalid Password Login Attempt",
                   "preconditions": ["User exists in system"],
                   "test_steps": [
                     "Enter incorrect password",

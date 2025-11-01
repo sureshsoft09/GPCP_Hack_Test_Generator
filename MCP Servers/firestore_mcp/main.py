@@ -286,6 +286,11 @@ async def add_use_case_to_feature(
     use_case_title: str,
     description: str = "",
     acceptance_criteria: List[str] = [],
+    test_scenarios_outline: List[str] = [],
+    model_explanation: str = "",
+    review_status: str = "Draft",
+    comments: str = "",
+    compliance_mapping: List[str] = [],
     use_case_id: str = ""
 ) -> Dict[str, Any]:
     """Add a use case to a feature."""
@@ -294,6 +299,11 @@ async def add_use_case_to_feature(
             "use_case_title": use_case_title,
             "description": description,
             "acceptance_criteria": acceptance_criteria,
+            "test_scenarios_outline": test_scenarios_outline,
+            "model_explanation": model_explanation,
+            "review_status": review_status,
+            "comments": comments,
+            "compliance_mapping": compliance_mapping,
             "use_case_id": use_case_id or f"uc_{len(firestore_client.get_feature_use_cases(project_id, epic_id, feature_id)) + 1}",
             "jira_status": "Not Pushed",
             "created_at": firestore_client.get_current_timestamp()
@@ -337,18 +347,48 @@ async def add_test_case_to_use_case(
     test_case_title: str,
     test_steps: List[str],
     expected_result: str,
-    test_type: str = "Functional"
+    test_type: str = "Functional",
+    test_case_id: str = "",
+    preconditions: List[str] = [],
+    compliance_mapping: List[str] = [],
+    model_explanation: str = "",
+    review_status: str = "Draft",
+    comments: str = ""
 ) -> Dict[str, Any]:
     """Add a new test case to a use case."""
     try:
-        test_case_id = firestore_client.add_test_case_to_use_case(
+        # Prepare additional fields for the enhanced firestore method
+        additional_fields = {
+            "preconditions": preconditions,
+            "compliance_mapping": compliance_mapping,
+            "model_explanation": model_explanation,
+            "review_status": review_status,
+            "comments": comments,
+            "jira_status": "Not Pushed"
+        }
+        
+        # Include custom test_case_id if provided
+        if test_case_id:
+            additional_fields["custom_test_case_id"] = test_case_id
+        
+        # Call the enhanced firestore method with additional fields
+        generated_test_case_id = firestore_client.add_test_case_to_use_case(
             project_id, epic_id, feature_id, use_case_id,
-            test_case_title, test_steps, expected_result, test_type
+            test_case_title, test_steps, expected_result, test_type,
+            additional_fields=additional_fields
         )
+        
         return {
             "success": True,
-            "test_case_id": test_case_id,
-            "message": f"Test case '{test_case_title}' added to use case '{use_case_id}'"
+            "test_case_id": generated_test_case_id,
+            "message": f"Test case '{test_case_title}' added to use case '{use_case_id}'",
+            "additional_data": {
+                "preconditions": preconditions,
+                "compliance_mapping": compliance_mapping,
+                "model_explanation": model_explanation,
+                "review_status": review_status,
+                "comments": comments
+            }
         }
     except Exception as e:
         return {

@@ -796,7 +796,7 @@ class FirestoreClient:
     
     def add_test_case_to_use_case(self, project_id: str, epic_id: str, feature_id: str, use_case_id: str, 
                                  test_case_title: str, test_steps: List[str], expected_result: str, 
-                                 test_type: str = "Functional") -> str:
+                                 test_type: str = "Functional", additional_fields: Optional[Dict[str, Any]] = None) -> str:
         """Add a test case to a use case (simple version)"""
         try:
             doc_ref = self.client.collection(self.projects_collection).document(project_id)
@@ -831,7 +831,7 @@ class FirestoreClient:
                                     use_case_found = True
                                     test_cases = use_case.get('test_cases', [])
                                     
-                                    # Create test case data
+                                    # Create test case data with core fields
                                     test_case_data = {
                                         'test_case_id': self._generate_id("TC_"),
                                         'test_case_title': test_case_title,
@@ -841,6 +841,10 @@ class FirestoreClient:
                                         'created_at': datetime.utcnow(),
                                         'updated_at': datetime.utcnow()
                                     }
+                                    
+                                    # Add additional fields if provided
+                                    if additional_fields:
+                                        test_case_data.update(additional_fields)
                                     
                                     # Add test case to use case
                                     test_cases.append(test_case_data)
