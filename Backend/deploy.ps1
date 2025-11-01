@@ -28,6 +28,10 @@ gcloud projects add-iam-policy-binding $GOOGLE_CLOUD_PROJECT `
 
 gcloud projects add-iam-policy-binding $GOOGLE_CLOUD_PROJECT `
     --member="serviceAccount:$SERVICE_ACCOUNT" `
+    --role="roles/firebase.admin"
+
+gcloud projects add-iam-policy-binding $GOOGLE_CLOUD_PROJECT `
+    --member="serviceAccount:$SERVICE_ACCOUNT" `
     --role="roles/logging.logWriter"
 
 # Deploy to Cloud Run using source deployment
