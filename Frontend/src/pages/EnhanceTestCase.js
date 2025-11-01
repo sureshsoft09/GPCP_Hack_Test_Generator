@@ -25,6 +25,7 @@ import {
   Collapse,
   Badge,
   ListItemButton,
+  Tooltip,
 } from '@mui/material';
 import {
   Assessment as EpicIcon,
@@ -38,6 +39,8 @@ import {
   Close as CloseIcon,
   Psychology as AIIcon,
   Refresh as RefreshIcon,
+  Warning as WarningIcon,
+  Psychology as ExplanationIcon,
 } from '@mui/icons-material';
 import { useNotification } from '../contexts/NotificationContext';
 import api from '../services/api';
@@ -59,6 +62,10 @@ const EnhanceTestCase = () => {
   const [userMessage, setUserMessage] = useState('');
   const [sendingMessage, setSendingMessage] = useState(false);
   const [agentStatus, setAgentStatus] = useState(null);
+  
+  // Model Explanation Dialog State
+  const [explanationDialogOpen, setExplanationDialogOpen] = useState(false);
+  const [currentExplanation, setCurrentExplanation] = useState(null);
   
   const { showNotification } = useNotification();
 
@@ -202,6 +209,65 @@ Please provide enhancement suggestions or ask clarifying questions.`
     return item.review_status !== 'Approved';
   };
 
+  // Helper functions to check for clarification needs
+  const needsClarification = (item) => {
+    return item.review_status === 'Need Clarification' || 
+           item.review_status === 'Needs Clarification' ||
+           item.review_status === 'Pending Review' ||
+           isNonApproved(item);
+  };
+
+  const hasTestCasesNeedingClarification = (useCase) => {
+    const testCases = useCase.test_cases || [];
+    return needsClarification(useCase) || testCases.some(tc => needsClarification(tc));
+  };
+
+  const hasUseCasesNeedingClarification = (feature) => {
+    const useCases = feature.use_cases || [];
+    return useCases.some(uc => hasTestCasesNeedingClarification(uc));
+  };
+
+  const hasFeaturesNeedingClarification = (epic) => {
+    const features = epic.features || [];
+    return features.some(f => hasUseCasesNeedingClarification(f));
+  };
+
+  // InfoButton component for model explanations
+  const InfoButton = ({ onClick, hasInfo, tooltip }) => (
+    <Tooltip title={tooltip}>
+      <IconButton
+        size="small"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClick();
+        }}
+        sx={{
+          ml: 1,
+          color: hasInfo ? '#667eea' : '#ccc',
+          '&:hover': {
+            backgroundColor: hasInfo ? 'rgba(102, 126, 234, 0.1)' : 'rgba(204, 204, 204, 0.1)',
+          },
+        }}
+      >
+        <ExplanationIcon fontSize="small" />
+      </IconButton>
+    </Tooltip>
+  );
+
+  // Handle model explanation display
+  const handleModelExplanation = (item, type) => {
+    if (item.model_explanation) {
+      setCurrentExplanation({
+        title: item.use_case_title || item.test_case_title || item.feature_name || item.epic_name || item.title || `${type} explanation`,
+        type: type,
+        content: item.model_explanation
+      });
+      setExplanationDialogOpen(true);
+    } else {
+      showNotification('No model explanation available', 'info');
+    }
+  };
+
   const TestCaseItem = ({ testCase }) => (
     <ListItem
       sx={{
@@ -216,39 +282,102 @@ Please provide enhancement suggestions or ask clarifying questions.`
       </ListItemIcon>
       <ListItemText
         primary={
-          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <Box sx={{ display: 'flex', alignItems: 'center' }}>
-              <Typography variant="subtitle2">
-                {testCase.test_case_title || `Test Case ${testCase.test_case_id}`}
-              </Typography>
-            </Box>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <Chip
-                label={testCase.review_status || 'Pending'}
-                size="small"
-                color={testCase.review_status === 'Approved' ? 'success' : 'warning'}
-              />
-              {isNonApproved(testCase) && (
-                <Button
+          <Box>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                <Typography variant="subtitle2">
+                  {testCase.test_case_title || `Test Case ${testCase.test_case_id}`}
+                </Typography>
+                <InfoButton
+                  onClick={() => handleModelExplanation(testCase, 'test_case')}
+                  hasInfo={!!testCase.model_explanation}
+                  tooltip="View AI Model Explanation"
+                />
+                {needsClarification(testCase) && (
+                  <WarningIcon 
+                    sx={{ ml: 1, color: '#ff9800', fontSize: 14 }} 
+                    titleAccess="Needs clarification"
+                  />
+                )}
+              </Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <Chip
+                  label={testCase.review_status || 'Pending'}
                   size="small"
-                  variant="outlined"
-                  startIcon={<RefactorIcon />}
-                  onClick={() => handleRefactor(testCase, 'test_case')}
-                  sx={{ color: '#667eea', borderColor: '#667eea' }}
-                >
-                  Refactor
-                </Button>
-              )}
+                  color={testCase.review_status === 'Approved' ? 'success' : 'warning'}
+                />
+                {isNonApproved(testCase) && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<RefactorIcon />}
+                    onClick={() => handleRefactor(testCase, 'test_case')}
+                    sx={{ color: '#667eea', borderColor: '#667eea' }}
+                  >
+                    Refactor
+                  </Button>
+                )}
+              </Box>
             </Box>
           </Box>
         }
         secondary={
           <Box sx={{ mt: 1 }}>
-            <Typography variant="body2" color="text.secondary">
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
               Type: {testCase.test_type || 'Functional'}
             </Typography>
+            
+            {testCase.preconditions && (
+              <Box sx={{ mb: 1 }}>
+                <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>
+                  Preconditions:
+                </Typography>
+                {Array.isArray(testCase.preconditions) ? (
+                  testCase.preconditions.map((precondition, index) => (
+                    <Typography key={index} variant="body2" color="text.secondary" sx={{ ml: 1, mb: 0.5 }}>
+                      • {precondition}
+                    </Typography>
+                  ))
+                ) : (
+                  <Typography variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+                    {testCase.preconditions}
+                  </Typography>
+                )}
+              </Box>
+            )}
+            
+            {testCase.test_steps && (
+              <Box sx={{ mb: 1 }}>
+                <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>
+                  Test Steps:
+                </Typography>
+                {Array.isArray(testCase.test_steps) ? (
+                  testCase.test_steps.map((step, index) => (
+                    <Typography key={index} variant="body2" color="text.secondary" sx={{ ml: 1, mb: 0.5 }}>
+                      {index + 1}. {step}
+                    </Typography>
+                  ))
+                ) : (
+                  <Typography variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+                    {testCase.test_steps}
+                  </Typography>
+                )}
+              </Box>
+            )}
+            
+            {testCase.expected_result && (
+              <Box sx={{ mb: 1 }}>
+                <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>
+                  Expected Result:
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+                  {testCase.expected_result}
+                </Typography>
+              </Box>
+            )}
+
             {testCase.comments && (
-              <Typography variant="body2" color="text.secondary" sx={{ fontStyle: 'italic' }}>
+              <Typography variant="body2" color="text.secondary" sx={{ fontStyle: 'italic', mt: 1 }}>
                 Comments: {testCase.comments}
               </Typography>
             )}
@@ -270,39 +399,78 @@ Please provide enhancement suggestions or ask clarifying questions.`
           </ListItemIcon>
           <ListItemText
             primary={
-              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                  <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                    {useCase.use_case_title || `Use Case ${useCase.use_case_id}`}
-                  </Typography>
-                  <Badge badgeContent={testCases.length} color="success" sx={{ ml: 1 }}>
-                    <TestCaseIcon fontSize="small" />
-                  </Badge>
-                </Box>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <Chip
-                    label={useCase.review_status || 'Pending'}
-                    size="small"
-                    color={useCase.review_status === 'Approved' ? 'success' : 'warning'}
-                  />
-                  {isNonApproved(useCase) && (
-                    <Button
+              <Box>
+                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                      {useCase.use_case_title || `Use Case ${useCase.use_case_id}`}
+                    </Typography>
+                    <Badge badgeContent={testCases.length} color="success" sx={{ ml: 1 }}>
+                      <TestCaseIcon fontSize="small" />
+                    </Badge>
+                    <InfoButton
+                      onClick={() => handleModelExplanation(useCase, 'use_case')}
+                      hasInfo={!!useCase.model_explanation}
+                      tooltip="View AI Model Explanation"
+                    />
+                    {hasTestCasesNeedingClarification(useCase) && (
+                      <WarningIcon 
+                        sx={{ ml: 1, color: '#ff9800', fontSize: 16 }} 
+                        titleAccess="Contains items needing clarification"
+                      />
+                    )}
+                  </Box>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Chip
+                      label={useCase.review_status || 'Pending'}
                       size="small"
-                      variant="outlined"
-                      startIcon={<RefactorIcon />}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleRefactor(useCase, 'use_case');
-                      }}
-                      sx={{ color: '#667eea', borderColor: '#667eea' }}
-                    >
-                      Refactor
-                    </Button>
-                  )}
+                      color={useCase.review_status === 'Approved' ? 'success' : 'warning'}
+                    />
+                    {isNonApproved(useCase) && (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        startIcon={<RefactorIcon />}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRefactor(useCase, 'use_case');
+                        }}
+                        sx={{ color: '#667eea', borderColor: '#667eea' }}
+                      >
+                        Refactor
+                      </Button>
+                    )}
+                  </Box>
                 </Box>
               </Box>
             }
-            secondary={useCase.description}
+            secondary={
+              <Box>
+                {useCase.description && (
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                    {useCase.description}
+                  </Typography>
+                )}
+                {useCase.acceptance_criteria && (
+                  <Box sx={{ mt: 1 }}>
+                    <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>
+                      Acceptance Criteria:
+                    </Typography>
+                    {Array.isArray(useCase.acceptance_criteria) ? (
+                      useCase.acceptance_criteria.map((criteria, index) => (
+                        <Typography key={index} variant="body2" color="text.secondary" sx={{ ml: 1, mb: 0.5 }}>
+                          • {criteria}
+                        </Typography>
+                      ))
+                    ) : (
+                      <Typography variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+                        {useCase.acceptance_criteria}
+                      </Typography>
+                    )}
+                  </Box>
+                )}
+              </Box>
+            }
           />
           {isExpanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
         </ListItemButton>
@@ -345,6 +513,17 @@ Please provide enhancement suggestions or ask clarifying questions.`
                 <Badge badgeContent={useCases.length} color="info" sx={{ ml: 1 }}>
                   <UseCaseIcon fontSize="small" />
                 </Badge>
+                <InfoButton
+                  onClick={() => handleModelExplanation(feature, 'feature')}
+                  hasInfo={!!feature.model_explanation}
+                  tooltip="View AI Model Explanation"
+                />
+                {hasUseCasesNeedingClarification(feature) && (
+                  <WarningIcon 
+                    sx={{ ml: 1, color: '#ff9800', fontSize: 18 }} 
+                    titleAccess="Contains items needing clarification"
+                  />
+                )}
               </Box>
             }
             secondary={feature.description}
@@ -390,6 +569,17 @@ Please provide enhancement suggestions or ask clarifying questions.`
                 <Badge badgeContent={features.length} color="warning" sx={{ ml: 1 }}>
                   <FeatureIcon fontSize="small" />
                 </Badge>
+                <InfoButton
+                  onClick={() => handleModelExplanation(epic, 'epic')}
+                  hasInfo={!!epic.model_explanation}
+                  tooltip="View AI Model Explanation"
+                />
+                {hasFeaturesNeedingClarification(epic) && (
+                  <WarningIcon 
+                    sx={{ ml: 1, color: '#ff9800', fontSize: 20 }} 
+                    titleAccess="Contains items needing clarification"
+                  />
+                )}
               </Box>
             }
             secondary={epic.description}
@@ -477,9 +667,44 @@ Please provide enhancement suggestions or ask clarifying questions.`
       {/* Test Cases Hierarchy */}
       {projectHierarchy && (
         <Paper sx={{ p: 3 }}>
-          <Typography variant="h6" sx={{ mb: 3, fontWeight: 600 }}>
-            Project Hierarchy - {projectHierarchy.project_name}
-          </Typography>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+            <Typography variant="h6" sx={{ fontWeight: 600 }}>
+              Project Hierarchy - {projectHierarchy.project_name}
+            </Typography>
+            {/* Clarification Summary */}
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+              {projectHierarchy.epics && projectHierarchy.epics.some(epic => hasFeaturesNeedingClarification(epic)) && (
+                <Chip
+                  icon={<WarningIcon />}
+                  label="Contains items needing clarification"
+                  color="warning"
+                  variant="outlined"
+                  size="small"
+                />
+              )}
+            </Box>
+          </Box>
+          
+          {/* Legend */}
+          <Box sx={{ mb: 3, p: 2, backgroundColor: '#f8f9fa', borderRadius: 1, border: '1px solid #e9ecef' }}>
+            <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>
+              Legend:
+            </Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                <WarningIcon sx={{ color: '#ff9800', fontSize: 16 }} />
+                <Typography variant="body2" color="text.secondary">
+                  Items needing clarification
+                </Typography>
+              </Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                <RefactorIcon sx={{ color: '#667eea', fontSize: 16 }} />
+                <Typography variant="body2" color="text.secondary">
+                  Refactor available
+                </Typography>
+              </Box>
+            </Box>
+          </Box>
           {projectHierarchy.epics && projectHierarchy.epics.length > 0 ? (
             projectHierarchy.epics.map((epic) => (
               <EpicItem key={epic.epic_id} epic={epic} />
@@ -576,6 +801,41 @@ Please provide enhancement suggestions or ask clarifying questions.`
               <SendIcon />
             </IconButton>
           </Box>
+        </DialogContent>
+      </Dialog>
+
+      {/* Model Explanation Dialog */}
+      <Dialog
+        open={explanationDialogOpen}
+        onClose={() => setExplanationDialogOpen(false)}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center' }}>
+            <ExplanationIcon sx={{ mr: 1, color: '#667eea' }} />
+            AI Model Explanation
+          </Box>
+          <IconButton onClick={() => setExplanationDialogOpen(false)}>
+            <CloseIcon />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent>
+          {currentExplanation && (
+            <Box>
+              <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
+                {currentExplanation.title}
+              </Typography>
+              <Typography variant="body2" sx={{ mb: 1, color: '#666', textTransform: 'capitalize' }}>
+                Type: {currentExplanation.type.replace('_', ' ')}
+              </Typography>
+              <Paper sx={{ p: 2, backgroundColor: '#f8f9fa', border: '1px solid #e9ecef' }}>
+                <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>
+                  {currentExplanation.content}
+                </Typography>
+              </Paper>
+            </Box>
+          )}
         </DialogContent>
       </Dialog>
     </Container>
