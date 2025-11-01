@@ -39,6 +39,7 @@ class FirestoreService:
     def __init__(self):
         self.client: Optional[firestore.Client] = None
         self.project_id = os.getenv("FIRESTORE_PROJECT_ID", "medassureaiproject")
+        self.database_name = os.getenv("FIRESTORE_DATABASE_NAME", "medassureaifirestoredb")
         self.credentials_path = os.getenv("FIRESTORE_CREDENTIALS_PATH")
         self.projects_collection = os.getenv("FIRESTORE_PROJECTS_COLLECTION", "testcase_projects")
         
@@ -52,12 +53,19 @@ class FirestoreService:
         try:
             if self.credentials_path and os.path.exists(self.credentials_path):
                 credentials = service_account.Credentials.from_service_account_file(self.credentials_path)
-                self.client = firestore.Client(project=self.project_id, credentials=credentials)
-                logger.info(f"Firestore client initialized with service account for project: {self.project_id}")
+                self.client = firestore.Client(
+                    project=self.project_id, 
+                    credentials=credentials,
+                    database=self.database_name
+                )
+                logger.info(f"Firestore client initialized with service account for project: {self.project_id}, database: {self.database_name}")
             else:
                 # Use default credentials (useful in Cloud environments)
-                self.client = firestore.Client(project=self.project_id)
-                logger.info(f"Firestore client initialized with default credentials for project: {self.project_id}")
+                self.client = firestore.Client(
+                    project=self.project_id,
+                    database=self.database_name
+                )
+                logger.info(f"Firestore client initialized with default credentials for project: {self.project_id}, database: {self.database_name}")
         except Exception as e:
             logger.error(f"Failed to initialize Firestore client: {e}")
             self.client = None
@@ -148,7 +156,17 @@ class FirestoreService:
                     
                     # Calculate totals
                     total_epics = len(project_data.get('epics', []))
-                    total_test_cases = self._calculate_total_test_cases(project_data)
+                    total_features = 0
+                    total_use_cases = 0
+                    total_test_cases = 0
+                    
+                    # Count features, use cases, and test cases
+                    for epic in project_data.get('epics', []):
+                        for feature in epic.get('features', []):
+                            total_features += 1
+                            for use_case in feature.get('use_cases', []):
+                                total_use_cases += 1
+                                total_test_cases += len(use_case.get('test_cases', []))
                     
                     projects.append({
                         'project_id': doc.id,
@@ -157,6 +175,8 @@ class FirestoreService:
                         'created_at': project_data.get('created_at', ''),
                         'last_updated': project_data.get('updated_at', ''),
                         'total_epics': total_epics,
+                        'total_features': total_features,
+                        'total_use_cases': total_use_cases,
                         'total_test_cases': total_test_cases,
                         'status': project_data.get('status', 'active')
                     })

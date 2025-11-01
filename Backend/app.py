@@ -11,7 +11,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# Import our custom services
+# Load environment variables FIRST before importing services
+load_dotenv()
+
+# Import our custom services AFTER loading environment variables
 from upload_and_extract_service import upload_extract_service
 from content_storage_service import content_storage_service
 from firestore_service import firestore_service
@@ -24,8 +27,6 @@ try:
 except ImportError:
     FIRESTORE_AVAILABLE = False
     print("Warning: Firestore libraries not available. Install with: pip install google-cloud-firestore")
-
-load_dotenv()
 
 # Environment variables with Cloud Run friendly defaults
 AGENTS_API_URL = os.getenv("AGENTS_API_URL", "http://localhost:8082/query")
@@ -293,7 +294,7 @@ async def req_clarification_chat_with_agent(req: PromptRequest):
 ##Firestore Integration Endpoints
 
 @app.get("/projects")
-async def get_all_projects():
+async def get_storage_projects():
     """Get all stored projects for dashboard."""
     try:
         # Get all projects from storage service
@@ -485,10 +486,10 @@ async def get_firestore_projects():
         raise HTTPException(status_code=500, detail=f"Failed to fetch projects: {str(e)}")
 
 @app.get("/firestore/projects/{project_id}/hierarchy", response_model=ProjectHierarchy)
-async def get_project_hierarchy(project_id: str):
+async def get_firestore_project_hierarchy(project_id: str):
     """Get complete project hierarchy from Firestore."""
     try:
-        project_data = await firestore_service.get_project_hierarchy(project_id)
+        project_data = firestore_service.get_project_by_id(project_id)
         
         if not project_data:
             raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
@@ -525,10 +526,10 @@ async def get_model_explanation(
         raise HTTPException(status_code=500, detail=f"Failed to fetch model explanation: {str(e)}")
 
 @app.get("/firestore/projects/{project_id}/export-data")
-async def get_project_export_data(project_id: str):
+async def get_firestore_project_export_data(project_id: str):
     """Get project data formatted for export."""
     try:
-        project_data = await firestore_service.get_project_hierarchy(project_id)
+        project_data = firestore_service.get_project_by_id(project_id)
         
         if not project_data:
             raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
@@ -687,10 +688,12 @@ async def get_project_by_id(project_id: str):
 async def get_project_hierarchy(project_id: str):
     """Get complete project hierarchy"""
     try:
-        hierarchy = firestore_service.get_project_hierarchy(project_id)
-        if not hierarchy:
+        project_data = firestore_service.get_project_by_id(project_id)
+        if not project_data:
             raise HTTPException(status_code=404, detail="Project not found")
-        return {"hierarchy": hierarchy}
+        
+        # Return the project data with hierarchy structure
+        return {"hierarchy": project_data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching project hierarchy: {str(e)}")
 
