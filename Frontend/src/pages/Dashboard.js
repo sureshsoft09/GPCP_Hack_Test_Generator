@@ -52,9 +52,12 @@ import {
   Security as ComplianceIcon,
   Psychology as ExplanationIcon,
   Refresh as RefreshIcon,
+  TableChart as ExcelIcon,
+  Code as XmlIcon,
 } from '@mui/icons-material';
 import { useNotification } from '../contexts/NotificationContext';
 import api from '../services/api';
+import exportService from '../services/exportService';
 
 const Dashboard = () => {
   const [projects, setProjects] = useState([]);
@@ -77,6 +80,9 @@ const Dashboard = () => {
     totalUseCases: 0,
     totalTestCases: 0,
   });
+  const [exportMenuAnchor, setExportMenuAnchor] = useState(null);
+  const [selectedProjectForExport, setSelectedProjectForExport] = useState(null);
+  const [exportLoading, setExportLoading] = useState(false);
   const { showNotification } = useNotification();
 
   useEffect(() => {
@@ -124,6 +130,39 @@ const Dashboard = () => {
     await loadProjects();
     setRefreshing(false);
     showNotification('Projects refreshed successfully', 'success');
+  };
+
+  const handleOpenExportMenu = (event, project) => {
+    setExportMenuAnchor(event.currentTarget);
+    setSelectedProjectForExport(project);
+  };
+
+  const handleCloseExportMenu = () => {
+    setExportMenuAnchor(null);
+    setSelectedProjectForExport(null);
+  };
+
+  const handleExport = async (format) => {
+    if (!selectedProjectForExport) return;
+    setExportLoading(true);
+    try {
+      const project = selectedProjectForExport;
+      // Use the hierarchy object as the base, but include a friendly name and id
+      const projectData = {
+        ...project.hierarchy,
+        name: project.project_name,
+        project_id: project.project_id,
+        statistics: project.statistics || {}
+      };
+      await exportService.exportProject(projectData, format, project.project_name);
+      showNotification(`Exported ${project.project_name} as ${format.toUpperCase()}`, 'success');
+    } catch (err) {
+      console.error('Export error', err);
+      showNotification('Export failed', 'error');
+    } finally {
+      setExportLoading(false);
+      handleCloseExportMenu();
+    }
   };
 
   const calculateStatistics = (projectsData) => {
@@ -187,6 +226,43 @@ const Dashboard = () => {
         explanation: item.model_explanation || 'No explanation available',
         loading: false,
       }));
+    }
+  };
+
+  const handleExportProject = async (project, format) => {
+    try {
+      const projectData = {
+        project_id: project.project_id,
+        name: project.project_name,
+        created_date: project.created_at,
+        status: project.status,
+        statistics: {
+          total_epics: project.total_epics || 0,
+          total_features: project.total_features || 0,
+          total_use_cases: project.total_use_cases || 0,
+          total_test_cases: project.total_test_cases || 0,
+        },
+        epics: project.hierarchy?.epics || []
+      };
+
+      const result = await exportService.exportProject(projectData, format, project.project_name);
+      showNotification(`Successfully exported ${project.project_name} as ${format.toUpperCase()}`, 'success');
+      return result;
+    } catch (error) {
+      console.error(`Error exporting project as ${format}:`, error);
+      showNotification(`Failed to export project as ${format.toUpperCase()}`, 'error');
+    }
+  };
+
+  const handleExportAllProjects = async (format) => {
+    try {
+      for (const project of projects) {
+        await handleExportProject(project, format);
+      }
+      showNotification(`Successfully exported all projects as ${format.toUpperCase()}`, 'success');
+    } catch (error) {
+      console.error(`Error exporting all projects as ${format}:`, error);
+      showNotification(`Failed to export all projects as ${format.toUpperCase()}`, 'error');
     }
   };
 
@@ -315,15 +391,24 @@ const Dashboard = () => {
       <ListItemText
         primary={
           <Box>
-            <Box sx={{ display: 'flex', alignItems: 'center' }}>
-              <Typography variant="subtitle2">
-                {testCase.test_case_title || `Test Case ${testCase.test_case_id}`}
-              </Typography>
-              <InfoButton
-                onClick={() => handleModelExplanation(testCase, 'test_case', projectId)}
-                hasInfo={!!testCase.model_explanation}
-                tooltip="View AI Model Explanation"
-              />
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                <Typography variant="subtitle2">
+                  {testCase.test_case_title || `Test Case ${testCase.test_case_id}`}
+                </Typography>
+                <InfoButton
+                  onClick={() => handleModelExplanation(testCase, 'test_case', projectId)}
+                  hasInfo={!!testCase.model_explanation}
+                  tooltip="View AI Model Explanation"
+                />
+              </Box>
+              {testCase.review_status && (
+                <Chip
+                  label={testCase.review_status}
+                  size="small"
+                  color={testCase.review_status === 'Approved' ? 'success' : 'default'}
+                />
+              )}
             </Box>
             {testCase.compliance_mapping && testCase.compliance_mapping.length > 0 && (
               <ComplianceDisplay 
@@ -334,17 +419,58 @@ const Dashboard = () => {
           </Box>
         }
         secondary={
-          <Box>
-            <Typography variant="body2" color="text.secondary">
+          <Box sx={{ mt: 1 }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
               Type: {testCase.test_type || 'Functional'}
             </Typography>
-            {testCase.review_status && (
-              <Chip
-                label={testCase.review_status}
-                size="small"
-                color={testCase.review_status === 'Approved' ? 'success' : 'default'}
-                sx={{ mt: 0.5 }}
-              />
+            
+            {testCase.preconditions && (
+              <Box sx={{ mb: 1 }}>
+                <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>
+                  Preconditions:
+                </Typography>
+                {Array.isArray(testCase.preconditions) ? (
+                  testCase.preconditions.map((precondition, index) => (
+                    <Typography key={index} variant="body2" color="text.secondary" sx={{ ml: 1, mb: 0.5 }}>
+                      • {precondition}
+                    </Typography>
+                  ))
+                ) : (
+                  <Typography variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+                    {testCase.preconditions}
+                  </Typography>
+                )}
+              </Box>
+            )}
+            
+            {testCase.test_steps && (
+              <Box sx={{ mb: 1 }}>
+                <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>
+                  Test Steps:
+                </Typography>
+                {Array.isArray(testCase.test_steps) ? (
+                  testCase.test_steps.map((step, index) => (
+                    <Typography key={index} variant="body2" color="text.secondary" sx={{ ml: 1, mb: 0.5 }}>
+                      {index + 1}. {step}
+                    </Typography>
+                  ))
+                ) : (
+                  <Typography variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+                    {testCase.test_steps}
+                  </Typography>
+                )}
+              </Box>
+            )}
+            
+            {testCase.expected_result && (
+              <Box sx={{ mb: 1 }}>
+                <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>
+                  Expected Result:
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+                  {testCase.expected_result}
+                </Typography>
+              </Box>
             )}
           </Box>
         }
@@ -358,7 +484,11 @@ const Dashboard = () => {
 
     return (
       <Card sx={{ mb: 1, border: '1px solid #e0e0e0' }}>
-        <ListItemButton onClick={() => toggleUseCaseExpansion(useCase.use_case_id)}>
+        <ListItemButton onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleUseCaseExpansion(useCase.use_case_id);
+        }}>
           <ListItemIcon>
             <UseCaseIcon color="info" />
           </ListItemIcon>
@@ -420,7 +550,11 @@ const Dashboard = () => {
 
     return (
       <Card sx={{ mb: 1, border: '1px solid #d0d0d0' }}>
-        <ListItemButton onClick={() => toggleFeatureExpansion(feature.feature_id)}>
+        <ListItemButton onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleFeatureExpansion(feature.feature_id);
+        }}>
           <ListItemIcon>
             <FeatureIcon color="warning" />
           </ListItemIcon>
@@ -482,7 +616,11 @@ const Dashboard = () => {
 
     return (
       <Card sx={{ mb: 2, border: '1px solid #c0c0c0' }}>
-        <ListItemButton onClick={() => toggleEpicExpansion(epic.epic_id)}>
+        <ListItemButton onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleEpicExpansion(epic.epic_id);
+        }}>
           <ListItemIcon>
             <EpicIcon color="secondary" />
           </ListItemIcon>
@@ -588,6 +726,28 @@ const Dashboard = () => {
                 color={project.status === 'Active' ? 'success' : 'default'}
                 size="small"
               />
+              <IconButton
+                size="small"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleExportProject(project, 'excel');
+                }}
+                title="Export to Excel"
+                sx={{ color: '#1976d2' }}
+              >
+                <ExcelIcon fontSize="small" />
+              </IconButton>
+              <IconButton
+                size="small"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleExportProject(project, 'xml');
+                }}
+                title="Export to XML"
+                sx={{ color: '#f57c00' }}
+              >
+                <XmlIcon fontSize="small" />
+              </IconButton>
             </Box>
           </Box>
         </AccordionSummary>
@@ -691,9 +851,33 @@ const Dashboard = () => {
 
       {/* Projects List */}
       <Paper sx={{ p: 3 }}>
-        <Typography variant="h5" sx={{ mb: 3, fontWeight: 600 }}>
-          Projects Overview
-        </Typography>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+          <Typography variant="h5" sx={{ fontWeight: 600 }}>
+            Projects Overview
+          </Typography>
+          {projects.length > 0 && (
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              <Button
+                variant="outlined"
+                size="small"
+                startIcon={<ExcelIcon />}
+                onClick={() => handleExportAllProjects('excel')}
+                sx={{ color: '#1976d2', borderColor: '#1976d2' }}
+              >
+                Export Excel
+              </Button>
+              <Button
+                variant="outlined"
+                size="small"
+                startIcon={<XmlIcon />}
+                onClick={() => handleExportAllProjects('xml')}
+                sx={{ color: '#f57c00', borderColor: '#f57c00' }}
+              >
+                Export XML
+              </Button>
+            </Box>
+          )}
+        </Box>
         {projects.length > 0 ? (
           projects.map((project) => (
             <ProjectAccordion key={project.project_id} project={project} />

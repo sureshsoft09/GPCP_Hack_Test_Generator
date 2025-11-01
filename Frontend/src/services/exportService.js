@@ -2,10 +2,11 @@ import jsPDF from 'jspdf';
 import 'jspdf-autotable';
 import { saveAs } from 'file-saver';
 import { Document, Packer, Paragraph, HeadingLevel, TextRun, Table, TableRow, TableCell } from 'docx';
+import * as XLSX from 'xlsx';
 
 class ExportService {
   constructor() {
-    this.formats = ['pdf', 'word', 'xml', 'markdown'];
+    this.formats = ['pdf', 'word', 'xml', 'markdown', 'excel'];
   }
 
   /**
@@ -26,6 +27,8 @@ class ExportService {
         return this.exportToXML(projectData, fileName);
       case 'markdown':
         return this.exportToMarkdown(projectData, fileName);
+      case 'excel':
+        return this.exportToExcel(projectData, fileName);
       default:
         throw new Error(`Unsupported export format: ${format}`);
     }
@@ -250,7 +253,7 @@ class ExportService {
     let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
     xml += '<project>\n';
     xml += `  <project_id>${projectData.project_id}</project_id>\n`;
-    xml += `  <name><![CDATA[${projectData.name}]]></name>\n`;
+    xml += `  <name>${projectData.name}</name>\n`;
     xml += `  <created_date>${projectData.created_date}</created_date>\n`;
     xml += `  <status>${projectData.status}</status>\n`;
 
@@ -266,9 +269,9 @@ class ExportService {
     xml += '  <epics>\n';
     projectData.epics?.forEach((epic) => {
       xml += '    <epic>\n';
-      xml += `      <epic_id>${epic.epic_id}</epic_id>\n`;
-      xml += `      <title><![CDATA[${epic.title}]]></title>\n`;
-      xml += `      <description><![CDATA[${epic.description || ''}]]></description>\n`;
+      xml += `      <epic_id>${epic.epic_id || ''}</epic_id>\n`;
+      xml += `      <title>${epic.epic_name || epic.title || ''}</title>\n`;
+      xml += `      <description>${epic.description || ''}</description>\n`;
       xml += `      <priority>${epic.priority || 'Medium'}</priority>\n`;
       
       if (epic.compliance_tags?.length > 0) {
@@ -282,31 +285,68 @@ class ExportService {
       xml += '      <features>\n';
       epic.features?.forEach((feature) => {
         xml += '        <feature>\n';
-        xml += `          <feature_id>${feature.feature_id}</feature_id>\n`;
-        xml += `          <title><![CDATA[${feature.title}]]></title>\n`;
-        xml += `          <description><![CDATA[${feature.description || ''}]]></description>\n`;
+        xml += `          <feature_id>${feature.feature_id || ''}</feature_id>\n`;
+        xml += `          <title>${feature.feature_name || feature.title || ''}</title>\n`;
+        xml += `          <description>${feature.description || ''}</description>\n`;
 
         xml += '          <use_cases>\n';
         feature.use_cases?.forEach((useCase) => {
           xml += '            <use_case>\n';
-          xml += `              <use_case_id>${useCase.use_case_id}</use_case_id>\n`;
-          xml += `              <title><![CDATA[${useCase.title}]]></title>\n`;
-          xml += `              <description><![CDATA[${useCase.description || ''}]]></description>\n`;
+          xml += `              <use_case_id>${useCase.use_case_id || ''}</use_case_id>\n`;
+          xml += `              <title>${useCase.use_case_title || useCase.title || ''}</title>\n`;
+          xml += `              <description>${useCase.description || ''}</description>\n`;
           
           if (useCase.model_explanation) {
-            xml += `              <model_explanation><![CDATA[${useCase.model_explanation}]]></model_explanation>\n`;
+            xml += `              <model_explanation>${useCase.model_explanation}</model_explanation>\n`;
           }
 
           xml += '              <test_cases>\n';
           useCase.test_cases?.forEach((testCase) => {
             xml += '                <test_case>\n';
-            xml += `                  <test_case_id>${testCase.test_case_id}</test_case_id>\n`;
-            xml += `                  <title><![CDATA[${testCase.title}]]></title>\n`;
+            xml += `                  <test_case_id>${testCase.test_case_id || testCase.custom_test_case_id || ''}</test_case_id>\n`;
+            xml += `                  <title>${testCase.test_case_title || testCase.title || ''}</title>\n`;
             xml += `                  <priority>${testCase.priority || 'Medium'}</priority>\n`;
             xml += `                  <test_type>${testCase.test_type || 'Functional'}</test_type>\n`;
+            xml += `                  <review_status>${testCase.review_status || 'Pending'}</review_status>\n`;
+            
+            if (testCase.preconditions && testCase.preconditions.length > 0) {
+              xml += '                  <preconditions>\n';
+              if (Array.isArray(testCase.preconditions)) {
+                testCase.preconditions.forEach(precondition => {
+                  xml += `                    <precondition>${precondition}</precondition>\n`;
+                });
+              } else {
+                xml += `                    <precondition>${testCase.preconditions}</precondition>\n`;
+              }
+              xml += '                  </preconditions>\n';
+            }
+            
+            if (testCase.test_steps && testCase.test_steps.length > 0) {
+              xml += '                  <test_steps>\n';
+              if (Array.isArray(testCase.test_steps)) {
+                testCase.test_steps.forEach((step, index) => {
+                  xml += `                    <step step_number="${index + 1}">${step}</step>\n`;
+                });
+              } else {
+                xml += `                    <step>${testCase.test_steps}</step>\n`;
+              }
+              xml += '                  </test_steps>\n';
+            }
+            
+            if (testCase.expected_result) {
+              xml += `                  <expected_result>${testCase.expected_result}</expected_result>\n`;
+            }
             
             if (testCase.model_explanation) {
-              xml += `                  <model_explanation><![CDATA[${testCase.model_explanation}]]></model_explanation>\n`;
+              xml += `                  <model_explanation>${testCase.model_explanation}</model_explanation>\n`;
+            }
+            
+            if (testCase.compliance_mapping && testCase.compliance_mapping.length > 0) {
+              xml += '                  <compliance_mapping>\n';
+              testCase.compliance_mapping.forEach(compliance => {
+                xml += `                    <compliance>${compliance}</compliance>\n`;
+              });
+              xml += '                  </compliance_mapping>\n';
             }
             
             xml += '                </test_case>\n';
@@ -388,6 +428,107 @@ class ExportService {
   }
 
   /**
+   * Export to Excel format (flat rows: epic/feature/use_case repeated per test case)
+   */
+  exportToExcel(projectData, fileName) {
+    // Columns: epic_id, epic_title, feature_id, feature_title, use_case_id, use_case_title,
+    // test_scenarios_outline (use case acceptance criteria), test_case_id, test_case_title,
+    // preconditions, test_steps, expected_result, model_explanation, review_status
+    const rows = [];
+
+    projectData.epics?.forEach((epic) => {
+      const epicId = epic.epic_id || '';
+      const epicTitle = epic.epic_name || epic.title || '';
+
+      epic.features?.forEach((feature) => {
+        const featureId = feature.feature_id || '';
+        const featureTitle = feature.feature_name || feature.title || '';
+
+        feature.use_cases?.forEach((useCase) => {
+          const useCaseId = useCase.use_case_id || '';
+          const useCaseTitle = useCase.use_case_title || useCase.title || '';
+          const testScenarios = Array.isArray(useCase.acceptance_criteria)
+            ? useCase.acceptance_criteria.join(' | ')
+            : (useCase.acceptance_criteria || '');
+
+          if (useCase.test_cases && useCase.test_cases.length > 0) {
+            useCase.test_cases.forEach((testCase) => {
+              const testCaseId = testCase.test_case_id || testCase.custom_test_case_id || '';
+              const testCaseTitle = testCase.test_case_title || testCase.title || '';
+              const preconditions = Array.isArray(testCase.preconditions)
+                ? testCase.preconditions.join(' | ')
+                : (testCase.preconditions || '');
+              const testSteps = Array.isArray(testCase.test_steps)
+                ? testCase.test_steps.join(' | ')
+                : (testCase.test_steps || '');
+              const expectedResult = testCase.expected_result || '';
+              const modelExplanation = testCase.model_explanation || '';
+              const reviewStatus = testCase.review_status || '';
+
+              rows.push({
+                epic_id: epicId,
+                epic_title: epicTitle,
+                feature_id: featureId,
+                feature_title: featureTitle,
+                use_case_id: useCaseId,
+                use_case_title: useCaseTitle,
+                test_scenarios_outline: testScenarios,
+                test_case_id: testCaseId,
+                test_case_title: testCaseTitle,
+                preconditions,
+                test_steps: testSteps,
+                expected_result: expectedResult,
+                model_explanation: modelExplanation,
+                review_status: reviewStatus,
+              });
+            });
+          } else {
+            // Use case with no test cases - still output a row (empty test case fields)
+            rows.push({
+              epic_id: epicId,
+              epic_title: epicTitle,
+              feature_id: featureId,
+              feature_title: featureTitle,
+              use_case_id: useCaseId,
+              use_case_title: useCaseTitle,
+              test_scenarios_outline: testScenarios,
+              test_case_id: '',
+              test_case_title: '',
+              preconditions: Array.isArray(useCase.preconditions) ? useCase.preconditions.join(' | ') : (useCase.preconditions || ''),
+              test_steps: Array.isArray(useCase.test_steps) ? useCase.test_steps.join(' | ') : (useCase.test_steps || ''),
+              expected_result: useCase.expected_result || '',
+              model_explanation: useCase.model_explanation || '',
+              review_status: useCase.review_status || '',
+            });
+          }
+        });
+      });
+    });
+
+    // Build worksheet and workbook
+    const worksheetData = [
+      [
+        'Epic ID', 'Epic Title', 'Feature ID', 'Feature Title', 'Use Case ID', 'Use Case Title',
+        'Test Scenarios Outline', 'Test Case ID', 'Test Case Title', 'Preconditions', 'Test Steps',
+        'Expected Result', 'Model Explanation', 'Review Status'
+      ],
+      ...rows.map(r => [
+        r.epic_id, r.epic_title, r.feature_id, r.feature_title, r.use_case_id, r.use_case_title,
+        r.test_scenarios_outline, r.test_case_id, r.test_case_title, r.preconditions, r.test_steps,
+        r.expected_result, r.model_explanation, r.review_status
+      ])
+    ];
+
+    const ws = XLSX.utils.aoa_to_sheet(worksheetData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'TestCases');
+    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([wbout], { type: 'application/octet-stream' });
+    saveAs(blob, `${fileName}.xlsx`);
+    return { success: true, format: 'Excel', fileName: `${fileName}.xlsx` };
+  }
+
+  /**
    * Get available export formats
    */
   getAvailableFormats() {
@@ -406,7 +547,8 @@ class ExportService {
       pdf: 'Portable Document Format - Best for printing and sharing',
       word: 'Microsoft Word Document - Editable document format',
       xml: 'XML Format - Structured data for integration',
-      markdown: 'Markdown Format - Human-readable text format'
+      markdown: 'Markdown Format - Human-readable text format',
+      excel: 'Excel Workbook - Spreadsheet format (XLSX)'
     };
     return descriptions[format] || '';
   }
