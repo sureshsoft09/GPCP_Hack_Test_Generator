@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import {
   Box,
@@ -98,6 +99,8 @@ const TestCaseGeneration = () => {
   const [testGenerationStats, setTestGenerationStats] = useState(null);
   const [exportFormat, setExportFormat] = useState('pdf');
   const [notification, setNotification] = useState({ open: false, message: '', type: 'info' });
+  const [completionDialog, setCompletionDialog] = useState(false);
+  const [isChatProcessing, setIsChatProcessing] = useState(false);
 
   // Derived readiness flag
   const isReadyForGeneration = Boolean(
@@ -134,13 +137,12 @@ const TestCaseGeneration = () => {
     },
     {
       label: 'Generate Test Cases',
-      description: 'Automatically generate comprehensive test cases'
-    },
-    {
-      label: 'Export Results',
-      description: 'Download test cases in your preferred format'
+      description: 'View generated test cases and access dashboard for complete details'
     }
   ];
+
+  // Navigation hook
+  const navigate = useNavigate();
 
   // Notification helper
   const showNotification = (message, type = 'info') => {
@@ -148,6 +150,18 @@ const TestCaseGeneration = () => {
     setTimeout(() => {
       setNotification({ open: false, message: '', type: 'info' });
     }, 5000);
+  };
+
+  // Completion dialog handler
+  const handleCompletionDialogClose = () => {
+    setCompletionDialog(false);
+    setActiveStep(3); // Move to step 4 (0-indexed, so 3 = step 4)
+  };
+
+  // Navigate to dashboard
+  const handleGoToDashboard = () => {
+    setCompletionDialog(false);
+    navigate('/dashboard');
   };
 
   // Step 1: Create New Project
@@ -437,6 +451,7 @@ const TestCaseGeneration = () => {
     setChatMessages(prev => [...prev, userMessage]);
     setNewMessage('');
     setIsProcessing(true);
+    setIsChatProcessing(true); // Indicate this is chat processing
 
     try {
       // Call clarification API on backend - backend expects PromptRequest with just a prompt field
@@ -503,29 +518,34 @@ const TestCaseGeneration = () => {
         setReadinessMeta(respData);
       }
 
-      // Check overall status and advance to next step if ready
+      // Check status to see if ready for generation
+      const status = respData?.status;
       const overall = respData?.readiness_plan?.overall_status || readinessMeta?.readiness_plan?.overall_status || null;
       const testGenStatus = respData?.test_generation_status?.ready_for_generation || readinessMeta?.test_generation_status?.ready_for_generation || false;
 
-      console.log('Checking readiness:', { overall, testGenStatus, respData });
+      console.log('Checking readiness:', { status, overall, testGenStatus, respData });
 
-      if ((overall && (overall.toLowerCase().includes('ready for test generation') || overall.toLowerCase().includes('ready'))) || testGenStatus) {
-        // Ready to generate - advance to step 3 and disable assistant
+      if (status === 'ready_for_generation' || 
+          (overall && (overall.toLowerCase().includes('ready for test generation') || overall.toLowerCase().includes('ready'))) || 
+          testGenStatus) {
+        // Ready to generate - stay on step 3 (Review & Chat) to show the Generate Test Cases button
         setAssistantEnabled(false);
-        setActiveStep(3);
-        showNotification('Requirements are ready for test generation!', 'success');
-        console.log('Advanced to step 3 - ready for generation');
+        // Stay on current step (step 3 - index 2) - don't advance to step 4 yet
+        showNotification('Requirements are ready for test generation! Click the Generate Test Cases button to proceed.', 'success');
+        console.log('Ready for generation - staying on step 3 to show Generate button');
       } else {
         // Still needs clarification; keep assistant enabled and stay on step 2
         setAssistantEnabled(true);
-        console.log('Still needs clarification, staying on step 2');
+        console.log('Still needs clarification, staying on step 3 for more chat');
         // Don't change step - stay on Review & Chat
       }
 
       setIsProcessing(false);
+      setIsChatProcessing(false);
     } catch (err) {
       console.error('Clarification chat error:', err);
       setIsProcessing(false);
+      setIsChatProcessing(false);
       
       // Add error message to chat
       const errorMessage = {
@@ -549,9 +569,15 @@ const TestCaseGeneration = () => {
   };
 
   // Step 4: Generate Test Cases
-  const handleGenerateTestCases = async () => {
+  const handleGenerateTestCases = useCallback(async () => {
     if (!projectData.id || !projectData.name) {
       showNotification('Project information missing', 'error');
+      return;
+    }
+
+    // Prevent multiple concurrent calls
+    if (isGenerating) {
+      console.log('Test case generation already in progress, ignoring duplicate call');
       return;
     }
 
@@ -603,7 +629,7 @@ const TestCaseGeneration = () => {
       // Check if test generation was completed successfully
       const testGenerationStatus = testCaseData.test_generation_status;
       
-      if (testGenerationStatus && testGenerationStatus.status === 'completed') {
+      if (testGenerationStatus && (testGenerationStatus.status === 'completed' || testGenerationStatus.status === 'generation_completed')) {
         // Test cases were successfully generated and stored
         console.log('Test cases generated successfully:', testGenerationStatus);
         
@@ -633,12 +659,9 @@ const TestCaseGeneration = () => {
 
         setGeneratedTestCases(transformedTestCases);
         setIsGenerating(false);
-        setActiveStep(3); // Go to step 4 (0-indexed, so 3 = step 4)
         
-        const successMessage = `Successfully generated ${testGenerationStatus.test_cases_created || transformedTestCases.length} test cases! ` +
-          `Stored in Firestore: ${testGenerationStatus.stored_in_firestore ? 'Yes' : 'No'}, ` +
-          `Pushed to Jira: ${testGenerationStatus.pushed_to_jira ? 'Yes' : 'No'}`;
-        showNotification(successMessage, 'success');
+        // Show completion dialog
+        setCompletionDialog(true);
         
       } else {
         // Test generation failed or is still in progress
@@ -664,7 +687,7 @@ const TestCaseGeneration = () => {
       // const fallbackTestCases = generateFallbackTestCases();
       // setGeneratedTestCases(fallbackTestCases);
     }
-  };
+  }, [projectData.id, projectData.name, isGenerating, readinessMeta?.readiness_plan, showNotification]);
 
   // Helper function to generate fallback test cases
   const generateFallbackTestCases = () => {
@@ -1098,7 +1121,7 @@ const TestCaseGeneration = () => {
                               <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 4 }}>
                                 <CircularProgress size={40} sx={{ mb: 2 }} />
                                 <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                                  Analyzing uploaded documents...
+                                  Analyzing with AI assistant...
                                 </Typography>
                                 <Typography variant="caption" color="text.secondary">
                                   This may take a few moments
@@ -1373,7 +1396,7 @@ const TestCaseGeneration = () => {
                                   !assistantEnabled 
                                     ? "Requirements are ready for test generation - Assistant disabled"
                                     : isProcessing 
-                                      ? "AI is processing your message..."
+                                      ? "Analyzing with AI assistant..."
                                       : "Ask about requirements or test scenarios..."
                                 }
                                 value={newMessage}
@@ -1527,6 +1550,13 @@ const TestCaseGeneration = () => {
                             </Box>
                             
                             <TestCaseTree testCases={generatedTestCases} />
+                            
+                            <Alert severity="info" sx={{ mt: 3 }}>
+                              <Typography variant="body2">
+                                <strong>Complete Details Available:</strong> Go to Dashboard page to see all generated test case details, 
+                                hierarchical view with epics, features, use cases, and export options.
+                              </Typography>
+                            </Alert>
                           </Box>
                         ) : (
                           <Box sx={{ textAlign: 'center', py: 4 }}>
@@ -1544,71 +1574,19 @@ const TestCaseGeneration = () => {
                       </Button>
                       <Button
                         variant="contained"
-                        onClick={() => setActiveStep(4)}
+                        onClick={handleGoToDashboard}
+                        startIcon={<ViewIcon />}
                         disabled={generatedTestCases.length === 0}
                       >
-                        Continue to Export
-                      </Button>
-                    </Stack>
-                  </Box>
-                )}
-
-                {/* Step 5: Export Results */}
-                {index === 4 && (
-                  <Box sx={{ py: 2 }}>
-                    <Card>
-                      <CardContent>
-                        <Typography variant="h6" gutterBottom>
-                          Export Test Cases
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary" gutterBottom>
-                          Download your generated test cases in your preferred format
-                        </Typography>
-
-                        <Box sx={{ mt: 3 }}>
-                          <Button
-                            variant="contained"
-                            startIcon={<ExportIcon />}
-                            onClick={() => setExportDialog(true)}
-                            disabled={generatedTestCases.length === 0}
-                          >
-                            Export Test Cases
-                          </Button>
-                        </Box>
-
-                        {generatedTestCases.length > 0 && (
-                          <Box sx={{ mt: 3 }}>
-                            <Typography variant="subtitle2" gutterBottom>
-                              Export Summary:
-                            </Typography>
-                            <List dense>
-                              <ListItem>
-                                <ListItemText primary={`Project: ${projectData.name}`} />
-                              </ListItem>
-                              <ListItem>
-                                <ListItemText primary={`Test Categories: ${generatedTestCases.length}`} />
-                              </ListItem>
-                              <ListItem>
-                                <ListItemText primary={`Total Test Cases: ${generatedTestCases.reduce((acc, cat) => acc + (cat.children?.length || 0), 0)}`} />
-                              </ListItem>
-                              <ListItem>
-                                <ListItemText primary={`Files Processed: ${uploadedFiles.length}`} />
-                              </ListItem>
-                            </List>
-                          </Box>
-                        )}
-                      </CardContent>
-                    </Card>
-
-                    <Stack direction="row" spacing={2} sx={{ mt: 3 }}>
-                      <Button onClick={() => setActiveStep(3)}>
-                        Back
+                        Go to Dashboard
                       </Button>
                       <Button
                         variant="outlined"
-                        onClick={() => setActiveStep(0)}
+                        onClick={() => setExportDialog(true)}
+                        startIcon={<ExportIcon />}
+                        disabled={generatedTestCases.length === 0}
                       >
-                        Start New Project
+                        Quick Export
                       </Button>
                     </Stack>
                   </Box>
@@ -1684,6 +1662,114 @@ const TestCaseGeneration = () => {
             disabled={isProcessing}
           >
             {isProcessing ? 'Exporting...' : 'Export'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Test Case Generation Completion Dialog */}
+      <Dialog 
+        open={completionDialog} 
+        onClose={handleCompletionDialogClose} 
+        maxWidth="md" 
+        fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: 3,
+            boxShadow: '0 10px 40px rgba(0,0,0,0.1)'
+          }
+        }}
+      >
+        <DialogTitle sx={{ 
+          textAlign: 'center', 
+          pb: 1,
+          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+          color: 'white',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 1
+        }}>
+          <CheckIcon />
+          Test Case Generation Completed
+        </DialogTitle>
+        <DialogContent sx={{ pt: 3 }}>
+          <Alert severity="success" sx={{ mb: 3 }}>
+            Test cases have been successfully generated and stored in Firestore and Jira!
+          </Alert>
+          
+          {testGenerationStats && (
+            <Grid container spacing={2} sx={{ mb: 3 }}>
+              <Grid item xs={6} sm={3}>
+                <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'primary.50', borderRadius: 2 }}>
+                  <Typography variant="h4" color="primary.main">
+                    {testGenerationStats.epics_created}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Epics Created
+                  </Typography>
+                </Box>
+              </Grid>
+              <Grid item xs={6} sm={3}>
+                <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'secondary.50', borderRadius: 2 }}>
+                  <Typography variant="h4" color="secondary.main">
+                    {testGenerationStats.features_created}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Features Created
+                  </Typography>
+                </Box>
+              </Grid>
+              <Grid item xs={6} sm={3}>
+                <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'success.50', borderRadius: 2 }}>
+                  <Typography variant="h4" color="success.main">
+                    {testGenerationStats.use_cases_created}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Use Cases Created
+                  </Typography>
+                </Box>
+              </Grid>
+              <Grid item xs={6} sm={3}>
+                <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'info.50', borderRadius: 2 }}>
+                  <Typography variant="h4" color="info.main">
+                    {testGenerationStats.test_cases_created}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Test Cases Created
+                  </Typography>
+                </Box>
+              </Grid>
+            </Grid>
+          )}
+
+          <Box sx={{ mb: 2 }}>
+            <Typography variant="body1" color="text.secondary" sx={{ mb: 1 }}>
+              ✅ Stored in Firestore: {testGenerationStats?.stored_in_firestore ? 'Yes' : 'No'}
+            </Typography>
+            <Typography variant="body1" color="text.secondary">
+              ✅ Pushed to Jira: {testGenerationStats?.pushed_to_jira ? 'Yes' : 'No'}
+            </Typography>
+          </Box>
+
+          <Alert severity="info" sx={{ mt: 2 }}>
+            <Typography variant="body2">
+              Go to the Dashboard page to see complete generated test case details and export options.
+            </Typography>
+          </Alert>
+        </DialogContent>
+        <DialogActions sx={{ p: 3, gap: 2 }}>
+          <Button 
+            onClick={handleCompletionDialogClose}
+            variant="outlined"
+          >
+            View Generated Cases
+          </Button>
+          <Button 
+            onClick={handleGoToDashboard}
+            variant="contained"
+            startIcon={<ViewIcon />}
+          >
+            Go to Dashboard
           </Button>
         </DialogActions>
       </Dialog>
