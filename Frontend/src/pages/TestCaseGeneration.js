@@ -1183,28 +1183,6 @@ const TestCaseGeneration = () => {
                                   </Accordion>
                                 )}
 
-                                <Accordion>
-                                  <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                                    <Typography>Document Analysis</Typography>
-                                  </AccordionSummary>
-                                  <AccordionDetails>
-                                    <Grid container spacing={2}>
-                                      <Grid item xs={6}>
-                                        <Typography variant="body2">Total Pages: {readinessPlan.documentAnalysis?.totalPages || 0}</Typography>
-                                      </Grid>
-                                      <Grid item xs={6}>
-                                        <Typography variant="body2">Key Features: {readinessPlan.documentAnalysis?.keyFeatures || 0}</Typography>
-                                      </Grid>
-                                      <Grid item xs={6}>
-                                        <Typography variant="body2">Requirements: {readinessPlan.documentAnalysis?.requirements || 0}</Typography>
-                                      </Grid>
-                                      <Grid item xs={6}>
-                                        <Typography variant="body2">Risk Areas: {readinessPlan.documentAnalysis?.riskAreas || 0}</Typography>
-                                      </Grid>
-                                    </Grid>
-                                  </AccordionDetails>
-                                </Accordion>
-
                                 <Accordion defaultExpanded>
                                   <AccordionSummary expandIcon={<ExpandMoreIcon />}>
                                     <Typography>Readiness Plan</Typography>
@@ -1438,14 +1416,28 @@ const TestCaseGeneration = () => {
                       <Button onClick={() => setActiveStep(1)}>
                         Back
                       </Button>
-                      <Button
-                        variant="contained"
-                        onClick={handleGenerateTestCases}
-                        disabled={!isReadyForGeneration || isGenerating}
-                        startIcon={isGenerating ? <CircularProgress size={20} /> : <TestCaseIcon />}
-                      >
-                        {isGenerating ? 'Generating...' : 'Generate Test Cases'}
-                      </Button>
+                      
+                      {/* Show Generate Test Cases button if not yet generated */}
+                      {!testGenerationStats ? (
+                        <Button
+                          variant="contained"
+                          onClick={handleGenerateTestCases}
+                          disabled={!isReadyForGeneration || isGenerating}
+                          startIcon={isGenerating ? <CircularProgress size={20} /> : <TestCaseIcon />}
+                        >
+                          {isGenerating ? 'Generating...' : 'Generate Test Cases'}
+                        </Button>
+                      ) : (
+                        /* Show Continue to Results button if test cases are already generated */
+                        <Button
+                          variant="contained"
+                          onClick={() => setActiveStep(3)}
+                          startIcon={<ViewIcon />}
+                          color="success"
+                        >
+                          View Generated Test Cases
+                        </Button>
+                      )}
                     </Stack>
                   </Box>
                 )}
@@ -1529,44 +1521,12 @@ const TestCaseGeneration = () => {
                       </Card>
                     )}
 
-                    <Card>
-                      <CardContent>
-                        <Typography variant="h6" gutterBottom>
-                          Generated Test Cases
-                        </Typography>
-                        
-                        {generatedTestCases.length > 0 ? (
-                          <Box>
-                            <Box sx={{ mb: 2 }}>
-                              <Chip 
-                                label={`${generatedTestCases.length} Test Categories`} 
-                                color="primary" 
-                                sx={{ mr: 1 }}
-                              />
-                              <Chip 
-                                label={`${generatedTestCases.reduce((acc, cat) => acc + (cat.children?.length || 0), 0)} Total Test Cases`}
-                                color="secondary"
-                              />
-                            </Box>
-                            
-                            <TestCaseTree testCases={generatedTestCases} />
-                            
-                            <Alert severity="info" sx={{ mt: 3 }}>
-                              <Typography variant="body2">
-                                <strong>Complete Details Available:</strong> Go to Dashboard page to see all generated test case details, 
-                                hierarchical view with epics, features, use cases, and export options.
-                              </Typography>
-                            </Alert>
-                          </Box>
-                        ) : (
-                          <Box sx={{ textAlign: 'center', py: 4 }}>
-                            <Typography variant="body2" color="text.secondary">
-                              No test cases generated yet
-                            </Typography>
-                          </Box>
-                        )}
-                      </CardContent>
-                    </Card>
+                    <Alert severity="info" sx={{ mb: 3 }}>
+                      <Typography variant="body2">
+                        <strong>Complete Details Available:</strong> Go to Dashboard page to see all generated test case details, 
+                        hierarchical view with epics, features, use cases, and export options.
+                      </Typography>
+                    </Alert>
 
                     <Stack direction="row" spacing={2} sx={{ mt: 3 }}>
                       <Button onClick={() => setActiveStep(2)}>
@@ -1576,17 +1536,8 @@ const TestCaseGeneration = () => {
                         variant="contained"
                         onClick={handleGoToDashboard}
                         startIcon={<ViewIcon />}
-                        disabled={generatedTestCases.length === 0}
                       >
                         Go to Dashboard
-                      </Button>
-                      <Button
-                        variant="outlined"
-                        onClick={() => setExportDialog(true)}
-                        startIcon={<ExportIcon />}
-                        disabled={generatedTestCases.length === 0}
-                      >
-                        Quick Export
                       </Button>
                     </Stack>
                   </Box>
