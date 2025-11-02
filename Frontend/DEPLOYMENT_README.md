@@ -47,7 +47,24 @@ chmod +x deploy.sh
 ```
 
 ### Option 3: Manual Deployment
+
+**Step 1: Install Dependencies**
 ```bash
+npm install
+```
+
+**Step 2: Build the Application**
+```bash
+npm run build
+```
+*This creates the production build in the `build/` directory*
+
+**Step 3: Deploy to Firebase**
+```bash
+firebase deploy --only hosting
+```
+
+**Important**: Always run `npm run build` before deployment to ensure the latest code changes are included.
 # Set Firebase project
 firebase use medassureaiproject
 

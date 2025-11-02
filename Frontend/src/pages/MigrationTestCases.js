@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Box,
   Paper,
@@ -64,6 +64,8 @@ import { useNotification } from '../contexts/NotificationContext';
 import api from '../services/api';
 
 const MigrationTestCases = () => {
+  const [projects, setProjects] = useState([]);
+  const [loadingProjects, setLoadingProjects] = useState(true);
   const [selectedProject, setSelectedProject] = useState('');
   const [activeStep, setActiveStep] = useState(0);
   const [uploadedFiles, setUploadedFiles] = useState([]);
@@ -81,6 +83,9 @@ const MigrationTestCases = () => {
   const [isMigrating, setIsMigrating] = useState(false);
   const [previewDialogOpen, setPreviewDialogOpen] = useState(false);
   const [previewData, setPreviewData] = useState(null);
+
+  // Ensure projects is always an array
+  const safeProjects = projects || [];
   const fileInputRef = useRef(null);
   const { showNotification } = useNotification();
 
@@ -101,6 +106,42 @@ const MigrationTestCases = () => {
     'Execute Migration',
     'Review Results',
   ];
+
+  // Load projects from Firestore
+  useEffect(() => {
+    loadProjects();
+  }, []);
+
+  const loadProjects = async () => {
+    try {
+      setLoadingProjects(true);
+      const response = await api.get('/api/projects');
+      console.log('Projects API response:', response.data); // Debug log
+      
+      if (response.data) {
+        // Handle different possible response structures
+        let projectsArray = [];
+        if (Array.isArray(response.data)) {
+          projectsArray = response.data;
+        } else if (response.data.projects && Array.isArray(response.data.projects)) {
+          projectsArray = response.data.projects;
+        } else if (response.data.data && Array.isArray(response.data.data)) {
+          projectsArray = response.data.data;
+        }
+        
+        console.log('Processed projects array:', projectsArray); // Debug log
+        setProjects(projectsArray);
+      } else {
+        setProjects([]);
+      }
+    } catch (error) {
+      console.error('Error loading projects:', error);
+      setProjects([]);
+      showNotification('Failed to load projects', 'error');
+    } finally {
+      setLoadingProjects(false);
+    }
+  };
 
   const handleFileUpload = (event) => {
     const files = Array.from(event.target.files);
@@ -335,10 +376,22 @@ const MigrationTestCases = () => {
                 value={selectedProject}
                 onChange={(e) => setSelectedProject(e.target.value)}
                 label="Target Project"
+                disabled={loadingProjects}
               >
-                <MenuItem value="project1">MedDevice Pro v2.0</MenuItem>
-                <MenuItem value="project2">CardioMonitor System</MenuItem>
-                <MenuItem value="project3">DiagnosticHub Platform</MenuItem>
+                {loadingProjects ? (
+                  <MenuItem disabled>Loading projects...</MenuItem>
+                ) : safeProjects.length > 0 ? (
+                  safeProjects.map((project, index) => (
+                    <MenuItem 
+                      key={project.project_id || project.id || project._id || index} 
+                      value={project.project_id || project.id || project._id || `project_${index}`}
+                    >
+                      {project.project_name || project.name || project.title || `Project ${index + 1}`}
+                    </MenuItem>
+                  ))
+                ) : (
+                  <MenuItem disabled>No projects found</MenuItem>
+                )}
               </Select>
             </FormControl>
           </Grid>
